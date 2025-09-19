@@ -21,10 +21,10 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import axios from 'axios'
-import { useRouter } from 'vue-router'
+import apiClient from '../utils/axios'
+import * as VueRouter from 'vue-router'
 
-const router = useRouter()
+const router = (VueRouter as any).useRouter()
 const username = ref('')
 const password = ref('')
 const loading = ref(false)
@@ -41,10 +41,10 @@ const fillOps = () => {
 const doLogin = async () => {
   loading.value = true
   try {
-    const { data } = await axios.post('/api/auth/login', { username: username.value, password: password.value })
+    const { data } = await apiClient.post('/api/auth/login', { username: username.value, password: password.value })
     localStorage.setItem('token', data.token)
     localStorage.setItem('role', data.user?.roles?.[0] || '')
-    axios.defaults.headers.common['Authorization'] = `Bearer ${data.token}`
+    // Token已通过apiClient拦截器自动处理
     router.push('/')
   } finally {
     loading.value = false

@@ -1,18 +1,19 @@
 """
 指标预测模块API
-支持LSTM模型训练、预测和LLM修正
-实现1-6个月多周期预测，误差率<5%
+基于LLM的智能预测系统
+实现1-6个月多周期预测，支持业务上下文和外部因素
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
-from ...models.train.lstm_predictor import (
-    predict_lstm, train_model, save_model, load_model, evaluate_model, 
-    get_model_performance, LSTMPredictor
+from ...models.train.llm_predictor import (
+    predict_with_llm, train_llm_model, get_llm_model_status
+)
+from ...models.train.simple_predictor import (
+    predict_simple, train_simple_model, evaluate_simple_model, get_simple_model_status
 )
 from ...utils.llm.predict_correction import correct_forecast
-from ...config.model_switch import get_model_status
 from ...middleware.rate_limit import rate_limit
 import logging
 import time
@@ -21,14 +22,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# 全局预测器实例
-_predictor = LSTMPredictor()
-
 
 class IndicatorsPredictRequest(BaseModel):
-    series: List[float] = Field(..., description="历史营收/利润率序列", min_items=12)
+    series: List[float] = Field(..., description="历史营收/利润率序列", min_items=6)
     horizon_months: int = Field(1, ge=1, le=6, description="预测月份范围")
-    use_lstm: bool = Field(True, description="是否使用LSTM模型")
+    use_llm: bool = Field(True, description="是否使用LLM预测")
+
+
+class LLMPredictRequest(BaseModel):
+    series: List[float] = Field(..., description="历史数据序列", min_items=6)
+    horizon_months: int = Field(1, ge=1, le=6, description="预测月份范围")
+    context: str = Field("", description="业务上下文信息")
+    factors: List[str] = Field([], description="外部影响因素")
 
 
 class WithFactorsRequest(BaseModel):
@@ -37,16 +42,8 @@ class WithFactorsRequest(BaseModel):
     confidence_threshold: float = Field(0.8, ge=0.0, le=1.0, description="置信度阈值")
 
 
-class TrainRequest(BaseModel):
-    series: List[float] = Field(..., description="训练数据序列", min_items=12)
-    test_size: float = Field(0.2, ge=0.1, le=0.5, description="测试集比例")
-    epochs: int = Field(100, ge=10, le=500, description="训练轮数")
-    batch_size: int = Field(32, ge=8, le=128, description="批次大小")
-    sequence_length: int = Field(12, ge=6, le=24, description="序列长度")
-
-
 class ModelEvaluationRequest(BaseModel):
-    series: List[float] = Field(..., description="评估数据序列", min_items=12)
+    series: List[float] = Field(..., description="评估数据序列", min_items=6)
     test_size: float = Field(0.2, ge=0.1, le=0.5, description="测试集比例")
 
 
@@ -54,40 +51,44 @@ class ModelEvaluationRequest(BaseModel):
 async def indicators_predict(payload: IndicatorsPredictRequest) -> Dict[str, Any]:
     """指标预测接口"""
     try:
-        if len(payload.series) < 12:
+        if len(payload.series) < 6:
             raise HTTPException(
                 status_code=400, 
-                detail="历史数据不足，至少需要12个数据点"
+                detail="历史数据不足，至少需要6个数据点"
             )
         
         # 确保horizon_months在1-6范围内
         horizon_months = max(1, min(6, payload.horizon_months))
         
-        # 加载或训练模型
-        if not _predictor.is_trained:
-            logger.info("模型未训练，开始训练...")
-            training_result = _predictor.train(payload.series)
-            if not training_result.get("is_accurate", False):
-                logger.warning("模型训练精度不足，使用指数平滑")
-        
-        # 进行预测
+        # 根据用户选择使用LLM或简单预测
         start_time = time.time()
-        forecast = _predictor.predict(payload.series, horizon_months)
-        prediction_time = time.time() - start_time
+        if payload.use_llm:
+            # 使用LLM预测
+            result = predict_with_llm(
+                series=payload.series,
+                horizon_months=horizon_months,
+                context="企业指标预测",
+                factors=[]
+            )
+            forecast = result.get("predictions", [])
+            confidence = result.get("confidence", 0.5)
+            model_type = "LLM"
+        else:
+            # 使用简单预测
+            forecast = predict_simple(payload.series, horizon_months)
+            confidence = 0.7  # 简单预测的固定置信度
+            model_type = "Simple"
         
-        # 计算预测置信度（基于历史数据的稳定性）
-        series_std = float(np.std(payload.series[-12:])) if len(payload.series) >= 12 else 0.0
-        series_mean = float(np.mean(payload.series[-12:])) if len(payload.series) >= 12 else 0.0
-        confidence = max(0.5, 1.0 - (series_std / max(series_mean, 1e-6)))
+        prediction_time = time.time() - start_time
         
         return {
             "forecast": forecast,
             "horizon_months": horizon_months,
-            "model_type": "LSTM" if _predictor.model else "ExponentialSmoothing",
+            "model_type": model_type,
             "confidence": confidence,
             "prediction_time_ms": int(prediction_time * 1000),
             "data_points_used": len(payload.series),
-            "is_accurate": confidence > 0.8
+            "is_accurate": confidence > 0.7
         }
         
     except Exception as e:
@@ -142,10 +143,49 @@ async def predict_with_factors(payload: WithFactorsRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"修正失败: {str(e)}")
 
 
+@router.post("/llm-predict")
+@rate_limit(max_requests=10, window_seconds=60)
+async def llm_predict(payload: LLMPredictRequest) -> Dict[str, Any]:
+    """LLM智能预测接口"""
+    try:
+        if len(payload.series) < 6:
+            raise HTTPException(status_code=400, detail="历史数据不足，至少需要6个数据点")
+        
+        # 限制预测月份
+        horizon_months = min(6, payload.horizon_months)
+        
+        # 使用LLM进行预测
+        start_time = time.time()
+        result = predict_with_llm(
+            series=payload.series,
+            horizon_months=horizon_months,
+            context=payload.context,
+            factors=payload.factors
+        )
+        prediction_time = time.time() - start_time
+        
+        return {
+            "predictions": result.get("predictions", []),
+            "horizon_months": horizon_months,
+            "model_type": "LLM",
+            "confidence": result.get("confidence", 0.5),
+            "trend_analysis": result.get("trend_analysis", ""),
+            "risk_factors": result.get("risk_factors", []),
+            "recommendations": result.get("recommendations", []),
+            "methodology": result.get("methodology", "LLM预测"),
+            "prediction_time_ms": int(prediction_time * 1000),
+            "data_points_used": len(payload.series)
+        }
+        
+    except Exception as e:
+        logger.error(f"LLM预测失败: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM预测失败: {str(e)}")
+
+
 @router.post("/llm-simple")
 @rate_limit(max_requests=5, window_seconds=60)
 async def llm_simple_predict(payload: IndicatorsPredictRequest) -> Dict[str, Any]:
-    """LLM简单预测接口"""
+    """LLM简单预测接口（向后兼容）"""
     try:
         if len(payload.series) < 6:
             raise HTTPException(status_code=400, detail="历史数据不足，至少需要6个数据点")
@@ -177,43 +217,32 @@ async def llm_simple_predict(payload: IndicatorsPredictRequest) -> Dict[str, Any
 
 
 @router.post("/train")
-async def train_model_api(payload: TrainRequest, background_tasks: BackgroundTasks) -> Dict[str, Any]:
-    """模型训练接口"""
+async def train_model_api(payload: ModelEvaluationRequest, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    """模型训练/评估接口"""
     try:
-        if len(payload.series) < 12:
-            raise HTTPException(status_code=400, detail="训练数据不足，至少需要12个数据点")
+        if len(payload.series) < 6:
+            raise HTTPException(status_code=400, detail="训练数据不足，至少需要6个数据点")
         
-        # 设置预测器参数
-        _predictor.sequence_length = payload.sequence_length
-        
-        # 训练模型
+        # 训练简单模型
         start_time = time.time()
-        training_result = _predictor.train(
-            payload.series, 
-            test_size=payload.test_size,
-            epochs=payload.epochs,
-            batch_size=payload.batch_size
-        )
+        training_result = train_simple_model(payload.series, payload.test_size)
         training_time = time.time() - start_time
         
-        # 保存模型
-        save_model(training_result)
-        
         # 评估模型
-        mae, mape = evaluate_model(payload.series, payload.test_size)
+        eval_result = evaluate_simple_model(payload.series, payload.test_size)
         
         return {
-            "status": "trained",
+            "status": "trained" if training_result.get("is_trained", False) else "failed",
             "training_time_seconds": int(training_time),
             "model_params": training_result,
             "metrics": {
-                "mae": mae,
-                "mape": mape,
-                "is_accurate": mape < 5.0
+                "mae": eval_result.get("mae", 0.0),
+                "mape": eval_result.get("mape", 0.0),
+                "is_accurate": eval_result.get("is_accurate", False)
             },
             "data_points": len(payload.series),
             "test_size": payload.test_size,
-            "sequence_length": payload.sequence_length
+            "model_type": "Simple"
         }
         
     except Exception as e:
@@ -225,47 +254,23 @@ async def train_model_api(payload: TrainRequest, background_tasks: BackgroundTas
 async def evaluate_model_api(payload: ModelEvaluationRequest) -> Dict[str, Any]:
     """模型评估接口"""
     try:
-        if len(payload.series) < 12:
-            raise HTTPException(status_code=400, detail="评估数据不足，至少需要12个数据点")
+        if len(payload.series) < 6:
+            raise HTTPException(status_code=400, detail="评估数据不足，至少需要6个数据点")
         
-        # 分割数据
-        split_index = int(len(payload.series) * (1 - payload.test_size))
-        train_series = payload.series[:split_index]
-        test_series = payload.series[split_index:]
-        
-        if len(test_series) == 0:
-            raise HTTPException(status_code=400, detail="测试集为空")
-        
-        # 训练模型
-        _predictor.train(train_series)
-        
-        # 预测测试集
-        predictions = _predictor.predict(train_series, len(test_series))
-        
-        # 计算详细指标
-        import numpy as np
-        mae = float(np.mean(np.abs(np.array(test_series) - np.array(predictions))))
-        mape = float(np.mean(np.abs((np.array(test_series) - np.array(predictions)) / np.array(test_series))) * 100)
-        rmse = float(np.sqrt(np.mean((np.array(test_series) - np.array(predictions)) ** 2)))
-        
-        # 计算R²
-        ss_res = np.sum((np.array(test_series) - np.array(predictions)) ** 2)
-        ss_tot = np.sum((np.array(test_series) - np.mean(test_series)) ** 2)
-        r2 = float(1 - (ss_res / ss_tot)) if ss_tot != 0 else 0.0
+        # 使用简单预测器进行评估
+        eval_result = evaluate_simple_model(payload.series, payload.test_size)
         
         return {
             "metrics": {
-                "mae": mae,
-                "mape": mape,
-                "rmse": rmse,
-                "r2": r2,
-                "is_accurate": mape < 5.0
+                "mae": eval_result.get("mae", 0.0),
+                "mape": eval_result.get("mape", 0.0),
+                "is_accurate": eval_result.get("is_accurate", False)
             },
-            "predictions": predictions,
-            "actuals": test_series,
-            "test_size": len(test_series),
-            "train_size": len(train_series),
-            "model_type": "LSTM" if _predictor.model else "ExponentialSmoothing"
+            "predictions": eval_result.get("predictions", []),
+            "actuals": eval_result.get("actuals", []),
+            "test_size": int(len(payload.series) * payload.test_size),
+            "train_size": int(len(payload.series) * (1 - payload.test_size)),
+            "model_type": "Simple"
         }
         
     except Exception as e:
@@ -277,17 +282,44 @@ async def evaluate_model_api(payload: ModelEvaluationRequest) -> Dict[str, Any]:
 async def get_model_status_api() -> Dict[str, Any]:
     """获取模型状态"""
     try:
-        performance = get_model_performance()
+        llm_status = get_llm_model_status()
+        simple_status = get_simple_model_status()
+        
         return {
-            "model_status": performance,
-            "predictor_ready": _predictor.is_trained,
-            "model_type": "LSTM" if _predictor.model else "ExponentialSmoothing",
-            "sequence_length": _predictor.sequence_length
+            "llm_status": llm_status,
+            "simple_status": simple_status,
+            "available_models": ["LLM", "Simple"],
+            "recommended_model": "LLM"
         }
         
     except Exception as e:
         logger.error(f"获取模型状态失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(e)}")
+
+
+@router.post("/llm-train")
+async def train_llm_model_api(payload: ModelEvaluationRequest) -> Dict[str, Any]:
+    """LLM模型训练/评估接口"""
+    try:
+        if len(payload.series) < 6:
+            raise HTTPException(status_code=400, detail="训练数据不足，至少需要6个数据点")
+        
+        # 训练/评估LLM模型
+        start_time = time.time()
+        result = train_llm_model(payload.series, payload.test_size)
+        training_time = time.time() - start_time
+        
+        return {
+            "status": "trained" if result.get("is_trained", False) else "failed",
+            "training_time_seconds": int(training_time),
+            "model_params": result,
+            "data_points": len(payload.series),
+            "test_size": payload.test_size
+        }
+        
+    except Exception as e:
+        logger.error(f"LLM模型训练失败: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM训练失败: {str(e)}")
 
 
 @router.post("/batch-predict")
@@ -300,7 +332,7 @@ async def batch_predict(payload: List[IndicatorsPredictRequest]) -> Dict[str, An
         results = []
         for i, req in enumerate(payload):
             try:
-                if len(req.series) < 12:
+                if len(req.series) < 6:
                     results.append({
                         "index": i,
                         "error": "数据不足",
@@ -308,12 +340,26 @@ async def batch_predict(payload: List[IndicatorsPredictRequest]) -> Dict[str, An
                     })
                     continue
                 
-                forecast = _predictor.predict(req.series, req.horizon_months)
+                # 根据用户选择使用LLM或简单预测
+                if req.use_llm:
+                    result = predict_with_llm(
+                        series=req.series,
+                        horizon_months=req.horizon_months,
+                        context="批量预测",
+                        factors=[]
+                    )
+                    forecast = result.get("predictions", [])
+                    model_type = "LLM"
+                else:
+                    forecast = predict_simple(req.series, req.horizon_months)
+                    model_type = "Simple"
+                
                 results.append({
                     "index": i,
                     "forecast": forecast,
                     "horizon_months": req.horizon_months,
-                    "data_points": len(req.series)
+                    "data_points": len(req.series),
+                    "model_type": model_type
                 })
                 
             except Exception as e:

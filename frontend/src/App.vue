@@ -63,7 +63,7 @@
 import * as VueRouter from 'vue-router'
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import axios from 'axios'
+import apiClient from './utils/axios'
 import { LeftOutlined, RightOutlined, DatabaseOutlined, BarChartOutlined, ShoppingCartOutlined, SettingOutlined } from '@ant-design/icons-vue'
 const router = (VueRouter as any).useRouter()
 const go = (path: string) => router.push(path)
@@ -85,7 +85,7 @@ watch(dark, (newValue) => {
 })
 onMounted(async () => {
   try {
-    const { data } = await axios.get('/health')
+    const { data } = await apiClient.get('/health')
     backendOk.value = data?.status === 'ok'
   } catch {
     backendOk.value = false
@@ -293,6 +293,69 @@ onMounted(async () => {
 
 [data-theme="dark"] .ant-select-focused .ant-select-arrow {
   color: #1677ff !important;
+}
+
+/* 优化深色模式下的表格样式 */
+[data-theme="dark"] .ant-table {
+  background: transparent !important;
+  color: #e2e8f0 !important;
+}
+
+[data-theme="dark"] .ant-table-thead > tr > th {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #e2e8f0 !important;
+  font-weight: 600 !important;
+}
+
+[data-theme="dark"] .ant-table-tbody > tr > td {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+  color: #cbd5e1 !important;
+}
+
+[data-theme="dark"] .ant-table-tbody > tr:hover > td {
+  background: rgba(22, 119, 255, 0.1) !important;
+}
+
+[data-theme="dark"] .ant-table-tbody > tr.ant-table-row-selected > td {
+  background: rgba(22, 119, 255, 0.15) !important;
+}
+
+/* 优化深色模式下的空状态 */
+[data-theme="dark"] .ant-empty {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+[data-theme="dark"] .ant-empty-description {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+[data-theme="dark"] .ant-empty-icon {
+  color: rgba(255, 255, 255, 0.25) !important;
+}
+
+/* 优化深色模式下的分割线 */
+[data-theme="dark"] .ant-divider {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* 优化深色模式下的空间组件 */
+[data-theme="dark"] .ant-space {
+  color: #e2e8f0 !important;
+}
+
+/* 优化深色模式下的输入框占位符 */
+[data-theme="dark"] .ant-input::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+[data-theme="dark"] .ant-input-number::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+[data-theme="dark"] .ant-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
 }
 </style>
 

@@ -78,7 +78,7 @@
     </a-card>
 
     <!-- 指标预测卡片 -->
-    <a-card title="指标预测 (LSTM)" style="margin-bottom: 16px;">
+    <a-card title="指标预测 (LLM)" style="margin-bottom: 16px;">
       <a-form layout="vertical">
         <a-form-item label="历史序列">
           <a-textarea 
@@ -95,8 +95,8 @@
             </a-form-item>
           </a-col>
           <a-col :span="8">
-            <a-form-item label="使用LSTM">
-              <a-switch v-model:checked="predictForm.useLstm" />
+            <a-form-item label="使用LLM">
+              <a-switch v-model:checked="predictForm.useLlm" />
             </a-form-item>
           </a-col>
           <a-col :span="8">
@@ -220,7 +220,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import axios from 'axios'
+import apiClient from '../utils/axios'
 import * as echarts from 'echarts'
 import { message } from 'ant-design-vue'
 
@@ -244,7 +244,7 @@ const trainingResult = ref<any>(null)
 const predictForm = ref({
   seriesInput: '100\n120\n130\n140\n150\n160\n170\n180\n190\n200\n210\n220',
   horizonMonths: 3,
-  useLstm: true
+  useLlm: true
 })
 const predicting = ref(false)
 const batchPredicting = ref(false)
@@ -279,7 +279,7 @@ const exporting = ref(false)
 const loadModelStatus = async () => {
   try {
     statusLoading.value = true
-    const { data } = await axios.get('/api/predict/model-status')
+    const { data } = await apiClient.get('/api/predict/model-status')
     modelStatus.value = data
   } catch (error: any) {
     message.error('加载模型状态失败')
@@ -302,7 +302,7 @@ const trainModel = async () => {
     }
     
     training.value = true
-    const { data } = await axios.post('/api/predict/train', {
+    const { data } = await apiClient.post('/api/predict/train', {
       series,
       test_size: trainForm.value.testSize,
       epochs: trainForm.value.epochs,
@@ -337,7 +337,7 @@ const evaluateModel = async () => {
     }
     
     evaluating.value = true
-    const { data } = await axios.post('/api/predict/evaluate', {
+    const { data } = await apiClient.post('/api/predict/evaluate', {
       series,
       test_size: trainForm.value.testSize
     })
@@ -366,10 +366,10 @@ const predict = async () => {
     }
     
     predicting.value = true
-    const { data } = await axios.post('/api/predict/indicators', {
+    const { data } = await apiClient.post('/api/predict/indicators', {
       series,
       horizon_months: predictForm.value.horizonMonths,
-      use_lstm: predictForm.value.useLstm
+      use_llm: predictForm.value.useLlm
     })
     
     forecastResult.value = data
@@ -404,12 +404,12 @@ const batchPredict = async () => {
       requests.push({
         series: series.slice(0, -i * 2), // 使用不同的历史数据长度
         horizon_months: predictForm.value.horizonMonths,
-        use_lstm: predictForm.value.useLstm
+        use_llm: predictForm.value.useLlm
       })
     }
     
     batchPredicting.value = true
-    const { data } = await axios.post('/api/predict/batch-predict', requests)
+    const { data } = await apiClient.post('/api/predict/batch-predict', requests)
     
     batchResults.value = data.batch_results
     message.success(`批量预测完成，成功 ${data.successful}/${data.total_processed} 个`)
@@ -435,7 +435,7 @@ const correctPrediction = async () => {
     }
     
     correcting.value = true
-    const { data } = await axios.post('/api/predict/with-factors', {
+    const { data } = await apiClient.post('/api/predict/with-factors', {
       base_forecast: baseForecast,
       text_factors: correctionForm.value.textFactors,
       confidence_threshold: correctionForm.value.confidenceThreshold
@@ -480,7 +480,7 @@ const renderChart = () => {
   
   if (baseForecast.length > 0) {
     series.push({
-      name: 'LSTM预测',
+      name: 'LLM预测',
       type: 'line',
       data: baseForecast,
       itemStyle: { color: '#1890ff' }

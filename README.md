@@ -9,6 +9,7 @@ AI ERP 项目
 前端:
 - 进入 frontend，安装依赖 (pnpm/npm/yarn)
 - 运行 dev 启动开发服务 (默认端口5173)
+- 生产环境构建: VITE_API_BASE_URL=http://192.144.231.158:3127 npm run build
 
 环境变量:
 - 在项目根目录创建 .env，设置 LLM_API_KEY=your_api_key_here
@@ -62,5 +63,10 @@ python scripts/seed_mongo.py
 使用说明补充:
 - 登录演示账号：admin/admin123（角色admin）、ops/ops123（角色ops）
 - 成功登录后本地存储token，并自动携带Authorization头
+
+生产环境部署:
+- 前端API地址已配置为: http://192.144.231.158:3127
+- 使用脚本构建: ./scripts/build_production.sh
+- 将frontend/dist目录部署到Web服务器
 
 

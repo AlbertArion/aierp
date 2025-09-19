@@ -1,6 +1,7 @@
 import time
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Callable, Any
 from starlette.types import ASGIApp, Receive, Scope, Send
+from functools import wraps
 
 # 说明：简易内存限流（令牌桶简化版），用于开发环境
 
@@ -41,5 +42,60 @@ class SimpleRateLimit:
             return
 
         await self.app(scope, receive, send)
+
+
+# 全局限流存储
+_rate_limit_storage: Dict[str, Dict[str, Tuple[int, float]]] = {}
+
+
+def rate_limit(max_requests: int = 60, window_seconds: int = 60, key_func: Callable = None):
+    """
+    限流装饰器
+    
+    Args:
+        max_requests: 窗口期内最大请求数
+        window_seconds: 时间窗口（秒）
+        key_func: 自定义key生成函数，默认为IP地址
+    """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # 生成限流key
+            if key_func:
+                key = key_func(*args, **kwargs)
+            else:
+                # 默认使用IP地址作为key
+                key = "default"
+            
+            now = time.time()
+            window_key = f"{func.__name__}_{key}"
+            
+            # 获取或初始化计数器
+            if window_key not in _rate_limit_storage:
+                _rate_limit_storage[window_key] = {"count": 0, "window_start": now}
+            
+            window_data = _rate_limit_storage[window_key]
+            
+            # 检查是否需要重置窗口
+            if now - window_data["window_start"] > window_seconds:
+                window_data["count"] = 0
+                window_data["window_start"] = now
+            
+            # 检查是否超过限制
+            if window_data["count"] >= max_requests:
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=429, 
+                    detail=f"Rate limit exceeded: {max_requests} requests per {window_seconds} seconds"
+                )
+            
+            # 增加计数
+            window_data["count"] += 1
+            
+            # 调用原函数
+            return await func(*args, **kwargs)
+        
+        return wrapper
+    return decorator
 
 

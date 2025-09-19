@@ -168,7 +168,7 @@
           <a-card size="small">
             <div style="display: flex; justify-content: space-between;">
               <span><strong>{{ processType }}</strong></span>
-              <span>平均吞吐量: {{ (metrics.reduce((a, b) => a + b, 0) / metrics.length).toFixed(2) }} records/s</span>
+              <span>平均吞吐量: {{ (metrics.reduce((a: number, b: number) => a + b, 0) / metrics.length).toFixed(2) }} records/s</span>
             </div>
           </a-card>
         </div>
@@ -225,36 +225,91 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import axios from 'axios'
+import apiClient from '../utils/axios'
 import { InboxOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 
+// 类型定义
+interface SyncForm {
+  source: string
+  tables: string[]
+  useDatax: boolean
+  realTime: boolean
+}
+
+interface MappingForm {
+  sourceFields: string
+  targetFields: string
+  sourceSystem: string
+  targetSystem: string
+}
+
+interface SyncResult {
+  status: string
+  synced?: number
+  tables?: string[]
+  error_message?: string
+  error?: string
+}
+
+interface MappingResult {
+  mappings: Record<string, {
+    target_field: string
+    confidence: number
+    reason: string
+    transformation?: string
+  }>
+  field_analysis?: {
+    source_analysis: string
+    target_analysis: string
+    mapping_strategy: string
+  }
+  validation?: {
+    valid: boolean
+    errors?: string[]
+    warnings?: string[]
+  }
+}
+
+interface StreamMetrics {
+  performance_metrics?: Record<string, number[]>
+  recent_alerts?: Array<{
+    alert_id: string
+    message: string
+    timestamp: number
+    process_type: string
+    level: string
+    resolution?: string
+  }>
+  stream_running: boolean
+}
+
 // 数据同步相关
-const syncForm = ref({
+const syncForm = ref<SyncForm>({
   source: 'SAP',
   tables: ['sales', 'finance'],
   useDatax: true,
   realTime: false
 })
 const syncing = ref(false)
-const syncResult = ref<any>(null)
+const syncResult = ref<SyncResult | null>(null)
 
 // 字段映射相关
-const mappingForm = ref({
+const mappingForm = ref<MappingForm>({
   sourceFields: 'vbeln\nkunnr\nnetwr\nwaerk\nerdat',
   targetFields: 'order_no\ncustomer_code\namount\ncurrency\norder_date',
   sourceSystem: 'SAP',
   targetSystem: 'Snowflake'
 })
 const mappingLoading = ref(false)
-const mappingResult = ref<any>(null)
+const mappingResult = ref<MappingResult | null>(null)
 
 // 流处理监控相关
 const metricsLoading = ref(false)
-const streamMetrics = ref<any>({})
+const streamMetrics = ref<StreamMetrics>({ stream_running: false })
 
 // 文件解析相关
-const fileList = ref<any[]>([])
+const fileList = ref<File[]>([])
 const result = ref('')
 const parsing = ref(false)
 
@@ -262,12 +317,15 @@ const parsing = ref(false)
 const startSync = async () => {
   try {
     syncing.value = true
-    const { data } = await axios.post('/api/data/sync', syncForm.value)
+    const { data } = await apiClient.post('/api/data/sync', syncForm.value)
     syncResult.value = data
     message.success('同步任务已启动')
   } catch (error: any) {
     console.error('Sync failed:', error)
-    syncResult.value = { error: error.response?.data?.detail || 'Sync failed' }
+    syncResult.value = { 
+      status: 'error',
+      error: error.response?.data?.detail || 'Sync failed' 
+    }
     message.error('同步失败')
   } finally {
     syncing.value = false
@@ -281,7 +339,7 @@ const generateMapping = async () => {
     const sourceFields = mappingForm.value.sourceFields.split('\n').filter(f => f.trim())
     const targetFields = mappingForm.value.targetFields.split('\n').filter(f => f.trim())
     
-    const { data } = await axios.post('/api/data/field-mapping', {
+    const { data } = await apiClient.post('/api/data/field-mapping', {
       source_fields: sourceFields,
       target_fields: targetFields,
       source_system: mappingForm.value.sourceSystem,
@@ -302,7 +360,7 @@ const generateMapping = async () => {
 const loadStreamMetrics = async () => {
   try {
     metricsLoading.value = true
-    const { data } = await axios.get('/api/data/stream-metrics')
+    const { data } = await apiClient.get('/api/data/stream-metrics')
     streamMetrics.value = data
   } catch (error: any) {
     console.error('Load metrics failed:', error)
@@ -313,7 +371,7 @@ const loadStreamMetrics = async () => {
 }
 
 // 文件上传处理
-const beforeUpload = (file: any) => {
+const beforeUpload = (file: File) => {
   fileList.value = [file]
   return false // 阻止自动上传
 }
@@ -328,7 +386,7 @@ const parse = async () => {
   try {
     const form = new FormData()
     form.append('file', fileList.value[0])
-    const { data } = await axios.post('/api/data/parse-unstructured', form)
+    const { data } = await apiClient.post('/api/data/parse-unstructured', form)
     result.value = JSON.stringify(data, null, 2)
     message.success('文件解析成功')
   } catch (error: any) {

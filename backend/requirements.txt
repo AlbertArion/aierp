@@ -14,3 +14,7 @@ scikit-learn==1.3.2
 numpy==1.24.3
 statsmodels==0.14.0
 
+# Rules Engine
+jpype1==1.4.1
+# Drools将通过Java调用实现，使用JPype作为Python-Java桥接
+

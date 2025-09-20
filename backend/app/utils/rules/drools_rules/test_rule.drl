@@ -1,0 +1,10 @@
+
+package com.aierp.rules.test;
+
+rule "test_rule"
+    when
+        $fact: Map() from entry-point "events"
+    then
+        System.out.println("测试规则执行成功");
+end
+            

@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI ERP 系统架构</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            color: white;
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            font-weight: 300;
+            margin-bottom: 10px;
+            letter-spacing: 2px;
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .business-goals {
+            margin-top: 40px;
+        }
+
+        .business-goals h3 {
+            font-size: 1.5rem;
+            margin-bottom: 25px;
+            font-weight: 400;
+            opacity: 0.95;
+        }
+
+        .goals-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .goal-item {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 15px;
+            padding: 20px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: all 0.3s ease;
+        }
+
+        .goal-item:hover {
+            transform: translateY(-5px);
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .goal-icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .goal-title {
+            font-size: 1rem;
+            font-weight: 500;
+            line-height: 1.4;
+        }
+
+        .main-content {
+            padding: 40px;
+        }
+
+        .architecture-section {
+            margin-bottom: 60px;
+        }
+
+        .section-title {
+            font-size: 2rem;
+            color: #2c3e50;
+            margin-bottom: 30px;
+            text-align: center;
+            position: relative;
+        }
+
+        .section-title::after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 3px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 2px;
+        }
+
+        .architecture-diagram {
+            display: grid;
+            grid-template-rows: auto auto auto auto;
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .layer {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+            border: 2px solid #f8f9fa;
+            transition: all 0.3s ease;
+        }
+
+        .layer:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.15);
+        }
+
+        .layer-title {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+            padding: 10px;
+            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+            border-radius: 8px;
+        }
+
+        .components {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+
+        .component {
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            border-radius: 12px;
+            padding: 20px;
+            border-left: 4px solid;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .component::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(102, 126, 234, 0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .component:hover {
+            transform: scale(1.02);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+        }
+
+        .frontend { border-left-color: #3498db; }
+        .backend { border-left-color: #e74c3c; }
+        .data { border-left-color: #f39c12; }
+        .external { border-left-color: #9b59b6; }
+
+        .component-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+        }
+
+        .component-title::before {
+            content: '●';
+            margin-right: 8px;
+            font-size: 1.2rem;
+        }
+
+        .frontend .component-title::before { color: #3498db; }
+        .backend .component-title::before { color: #e74c3c; }
+        .data .component-title::before { color: #f39c12; }
+        .external .component-title::before { color: #9b59b6; }
+
+        .component-features {
+            list-style: none;
+            font-size: 0.9rem;
+            color: #5a6c7d;
+            line-height: 1.6;
+        }
+
+        .component-features li {
+            margin-bottom: 6px;
+            padding-left: 15px;
+            position: relative;
+        }
+
+        .component-features li::before {
+            content: '▸';
+            position: absolute;
+            left: 0;
+            color: #95a5a6;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            margin-top: 40px;
+        }
+
+        .feature-card {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            text-align: center;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+            border: 2px solid #f8f9fa;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+        }
+
+        .feature-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+        }
+
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 20px;
+            display: block;
+        }
+
+        .feature-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 15px;
+        }
+
+        .feature-description {
+            color: #5a6c7d;
+            line-height: 1.6;
+            font-size: 0.95rem;
+        }
+
+        .flow-diagram {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin: 30px 0;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+        }
+
+        .flow-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .flow-steps {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .flow-step {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 25px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            white-space: nowrap;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .flow-arrow {
+            color: #95a5a6;
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        .tech-stack {
+            background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+            border-radius: 15px;
+            padding: 30px;
+            margin-top: 40px;
+            border: 2px solid #e9ecef;
+        }
+
+        .tech-categories {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 25px;
+        }
+
+        .tech-category {
+            text-align: center;
+        }
+
+        .tech-category-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-radius: 8px;
+        }
+
+        .tech-list {
+            list-style: none;
+            font-size: 0.9rem;
+            color: #5a6c7d;
+            line-height: 1.8;
+        }
+
+        .tech-list li {
+            padding: 5px 0;
+            border-bottom: 1px solid #f1f3f4;
+        }
+
+        .tech-list li:last-child {
+            border-bottom: none;
+        }
+
+        .vision-section {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            border-radius: 20px;
+            margin-top: 60px;
+            padding: 60px 40px;
+            text-align: center;
+            color: white;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .vision-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grain" width="100" height="100" patternUnits="userSpaceOnUse"><circle cx="25" cy="25" r="1" fill="rgba(255,255,255,0.05)"/><circle cx="75" cy="75" r="1" fill="rgba(255,255,255,0.05)"/><circle cx="50" cy="10" r="0.5" fill="rgba(255,255,255,0.03)"/><circle cx="10" cy="60" r="0.5" fill="rgba(255,255,255,0.03)"/><circle cx="90" cy="40" r="0.5" fill="rgba(255,255,255,0.03)"/></pattern></defs><rect width="100" height="100" fill="url(%23grain)"/></svg>');
+            pointer-events: none;
+        }
+
+        .vision-container {
+            position: relative;
+            z-index: 1;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .vision-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .vision-title {
+            font-size: 2.5rem;
+            font-weight: 300;
+            margin-bottom: 30px;
+            letter-spacing: 1px;
+        }
+
+        .vision-main {
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 15px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: 3px;
+        }
+
+        .vision-subtitle {
+            font-size: 1.4rem;
+            margin-bottom: 30px;
+            opacity: 0.9;
+            font-weight: 400;
+        }
+
+        .vision-description {
+            font-size: 1.1rem;
+            line-height: 1.8;
+            opacity: 0.85;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .vision-description p {
+            margin-bottom: 20px;
+        }
+
+        .vision-description p:last-child {
+            margin-bottom: 0;
+            font-weight: 500;
+            opacity: 1;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+            
+            .components {
+                grid-template-columns: 1fr;
+            }
+            
+            .flow-steps {
+                flex-direction: column;
+            }
+            
+            .flow-arrow {
+                transform: rotate(90deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>AI ERP 系统架构</h1>
+            <p>智能化企业资源规划系统</p>
+            
+            <div class="business-goals">
+                <h3>核心业务目标</h3>
+                <div class="goals-grid">
+                    <div class="goal-item">
+                        <div class="goal-icon">📊</div>
+                        <div class="goal-title">AI驱动的企业指标预测系统</div>
+                    </div>
+                    <div class="goal-item">
+                        <div class="goal-icon">🔄</div>
+                        <div class="goal-title">AI驱动的对接流程监管机制</div>
+                    </div>
+                    <div class="goal-item">
+                        <div class="goal-icon">⚡</div>
+                        <div class="goal-title">AI驱动的自动化订单协同与更新系统</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <!-- 系统架构图 -->
+            <div class="architecture-section">
+                <h2 class="section-title">系统架构概览</h2>
+                
+                <div class="architecture-diagram">
+                    <!-- 前端层 -->
+                    <div class="layer">
+                        <div class="layer-title">前端展示层</div>
+                        <div class="components">
+                            <div class="component frontend">
+                                <div class="component-title">Web前端</div>
+                                <ul class="component-features">
+                                    <li>Vue3 + TypeScript</li>
+                                    <li>数据集成页面</li>
+                                    <li>指标预测页面</li>
+                                    <li>订单协同页面</li>
+                                    <li>流程监管页面</li>
+                                </ul>
+                            </div>
+                            <div class="component frontend">
+                                <div class="component-title">移动端</div>
+                                <ul class="component-features">
+                                    <li>uni-app 跨平台</li>
+                                    <li>语音操作页面</li>
+                                    <li>同步状态页面</li>
+                                    <li>离线缓存功能</li>
+                                </ul>
+                            </div>
+                            <div class="component external">
+                                <div class="component-title">外部ERP系统</div>
+                                <ul class="component-features">
+                                    <li>SAP系统对接</li>
+                                    <li>用友系统对接</li>
+                                    <li>其他ERP系统</li>
+                                    <li>DataX数据同步</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 后端服务层 -->
+                    <div class="layer">
+                        <div class="layer-title">后端服务层 (FastAPI + Python)</div>
+                        <div class="components">
+                            <div class="component backend">
+                                <div class="component-title">数据集成模块</div>
+                                <ul class="component-features">
+                                    <li>DataX同步服务</li>
+                                    <li>数据清洗处理</li>
+                                    <li>字段映射转换</li>
+                                </ul>
+                            </div>
+                            <div class="component backend">
+                                <div class="component-title">指标预测模块</div>
+                                <ul class="component-features">
+                                    <li>LLM智能预测</li>
+                                    <li>传统模型备用</li>
+                                    <li>模型动态切换</li>
+                                </ul>
+                            </div>
+                            <div class="component backend">
+                                <div class="component-title">流程监管模块</div>
+                                <ul class="component-features">
+                                    <li>Drools规则引擎</li>
+                                    <li>AI规则自迭代</li>
+                                    <li>分级告警系统</li>
+                                </ul>
+                            </div>
+                            <div class="component backend">
+                                <div class="component-title">订单协同模块</div>
+                                <ul class="component-features">
+                                    <li>文本智能处理</li>
+                                    <li>语音识别处理</li>
+                                    <li>实时数据同步</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 技术支撑层 -->
+                    <div class="layer">
+                        <div class="layer-title">技术支撑层</div>
+                        <div class="components">
+                            <div class="component backend">
+                                <div class="component-title">LLM集成层</div>
+                                <ul class="component-features">
+                                    <li>Qwen API集成</li>
+                                    <li>DeepSeek API集成</li>
+                                    <li>成本智能控制</li>
+                                </ul>
+                            </div>
+                            <div class="component backend">
+                                <div class="component-title">规则引擎层</div>
+                                <ul class="component-features">
+                                    <li>Drools规则管理</li>
+                                    <li>规则性能分析</li>
+                                    <li>规则动态更新</li>
+                                </ul>
+                            </div>
+                            <div class="component backend">
+                                <div class="component-title">数据处理层</div>
+                                <ul class="component-features">
+                                    <li>Pandas数据处理</li>
+                                    <li>BERT NLP处理</li>
+                                    <li>数据格式转换</li>
+                                </ul>
+                            </div>
+                            <div class="component backend">
+                                <div class="component-title">实时通信层</div>
+                                <ul class="component-features">
+                                    <li>WebSocket通信</li>
+                                    <li>实时消息推送</li>
+                                    <li>离线数据缓存</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 数据存储层 -->
+                    <div class="layer">
+                        <div class="layer-title">数据存储层</div>
+                        <div class="components">
+                            <div class="component data">
+                                <div class="component-title">MongoDB</div>
+                                <ul class="component-features">
+                                    <li>规则配置数据</li>
+                                    <li>告警记录数据</li>
+                                    <li>系统配置数据</li>
+                                </ul>
+                            </div>
+                            <div class="component data">
+                                <div class="component-title">MySQL</div>
+                                <ul class="component-features">
+                                    <li>订单业务记录</li>
+                                    <li>用户权限数据</li>
+                                    <li>系统操作日志</li>
+                                </ul>
+                            </div>
+                            <div class="component data">
+                                <div class="component-title">Snowflake</div>
+                                <ul class="component-features">
+                                    <li>历史数据仓库</li>
+                                    <li>分析计算数据</li>
+                                    <li>报表统计数据</li>
+                                </ul>
+                            </div>
+                            <div class="component data">
+                                <div class="component-title">Redis缓存</div>
+                                <ul class="component-features">
+                                    <li>热点数据缓存</li>
+                                    <li>用户会话缓存</li>
+                                    <li>临时计算缓存</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 核心业务流程 -->
+            <div class="architecture-section">
+                <h2 class="section-title">核心业务流程</h2>
+                
+                <div class="flow-diagram">
+                    <div class="flow-title">数据集成流程</div>
+                    <div class="flow-steps">
+                        <div class="flow-step">外部ERP</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">DataX同步</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">数据清洗</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">Snowflake存储</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">前端展示</div>
+                    </div>
+                </div>
+
+                <div class="flow-diagram">
+                    <div class="flow-title">指标预测流程</div>
+                    <div class="flow-steps">
+                        <div class="flow-step">历史数据</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">LLM分析</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">预测结果</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">模型切换</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">图表展示</div>
+                    </div>
+                </div>
+
+                <div class="flow-diagram">
+                    <div class="flow-title">流程监管流程</div>
+                    <div class="flow-steps">
+                        <div class="flow-step">业务数据</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">Drools规则</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">AI自迭代</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">分级告警</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">解决方案</div>
+                    </div>
+                </div>
+
+                <div class="flow-diagram">
+                    <div class="flow-title">订单协同流程</div>
+                    <div class="flow-steps">
+                        <div class="flow-step">文本/语音输入</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">BERT解析</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">订单操作</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">实时同步</div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-step">多端更新</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 系统特点 -->
+            <div class="architecture-section">
+                <h2 class="section-title">系统核心特点</h2>
+                
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="feature-icon">🤖</div>
+                        <div class="feature-title">AI驱动</div>
+                        <div class="feature-description">集成大模型进行智能预测和规则优化，提供智能化决策支持</div>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">🔄</div>
+                        <div class="feature-title">多端协同</div>
+                        <div class="feature-description">Web端和移动端实时数据同步，支持跨平台无缝协作</div>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">⚙️</div>
+                        <div class="feature-title">规则引擎</div>
+                        <div class="feature-description">Drools支持复杂业务规则定义，灵活配置业务逻辑</div>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">🚨</div>
+                        <div class="feature-title">分级告警</div>
+                        <div class="feature-description">五级告警体系，智能解决方案输出，主动风险管控</div>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">📱</div>
+                        <div class="feature-title">离线支持</div>
+                        <div class="feature-description">移动端离线缓存，网络恢复自动同步，保障业务连续性</div>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">🔧</div>
+                        <div class="feature-title">扩展性强</div>
+                        <div class="feature-description">模块化设计，支持多种ERP系统对接，易于扩展和维护</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 技术栈 -->
+            <div class="tech-stack">
+                <h2 class="section-title">技术栈概览</h2>
+                
+                <div class="tech-categories">
+                    <div class="tech-category">
+                        <div class="tech-category-title">前端技术</div>
+                        <ul class="tech-list">
+                            <li>Vue3 + TypeScript</li>
+                            <li>Element Plus</li>
+                            <li>ECharts</li>
+                            <li>uni-app</li>
+                            <li>WebSocket</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="tech-category">
+                        <div class="tech-category-title">后端技术</div>
+                        <ul class="tech-list">
+                            <li>FastAPI + Python</li>
+                            <li>Qwen/DeepSeek LLM</li>
+                            <li>BERT NLP</li>
+                            <li>Drools + JPype</li>
+                            <li>Pandas + DataX</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="tech-category">
+                        <div class="tech-category-title">数据存储</div>
+                        <ul class="tech-list">
+                            <li>MongoDB</li>
+                            <li>MySQL</li>
+                            <li>Snowflake</li>
+                            <li>Redis</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="tech-category">
+                        <div class="tech-category-title">部署运维</div>
+                        <ul class="tech-list">
+                            <li>Nginx</li>
+                            <li>Docker容器化</li>
+                            <li>负载均衡</li>
+                            <li>微服务架构</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 愿景部分 -->
+            <div class="vision-section">
+                <div class="vision-container">
+                    <div class="vision-icon">🤖</div>
+                    <h2 class="vision-title">系统愿景</h2>
+                    <div class="vision-content">
+                        <h3 class="vision-main">JARVIS</h3>
+                        <p class="vision-subtitle">AI驱动的企业高管智能决策助手</p>
+                        <div class="vision-description">
+                            <p>如同钢铁侠的JARVIS一样，我们致力于打造企业高管心中的ERP智能助手，通过人工智能技术赋能企业决策，让复杂的业务流程变得简单智能，让数据洞察触手可及，让企业管理如虎添翼。</p>
+                            <p>未来，每一位企业高管都将拥有属于自己的AI智能助手，实现真正的智慧管理。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

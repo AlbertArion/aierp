@@ -117,7 +117,7 @@ async def post_event(event: Dict[str, Any]) -> Dict[str, Any]:
                     },
                 })
                 classified_alerts.append(alert_data)
-                triggered.append(r.get("name", "rule"))
+            triggered.append(r.get("name", "rule"))
     
     # 2. Drools规则引擎执行
     try:

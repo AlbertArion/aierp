@@ -46,6 +46,18 @@
             </template>
             <span v-if="!collapsed">{{ t('menu.rules') }}</span>
           </a-menu-item>
+          <a-menu-item key="5" @click="go('/work-report-agent')">
+            <template #icon>
+              <RobotOutlined />
+            </template>
+            <span v-if="!collapsed">报工智能体</span>
+          </a-menu-item>
+          <a-menu-item key="6" @click="go('/work-report-chat')">
+            <template #icon>
+              <RobotOutlined />
+            </template>
+            <span v-if="!collapsed">报工对话查询</span>
+          </a-menu-item>
         </a-menu>
       </a-layout-sider>
       <a-layout-content class="app-content">
@@ -64,7 +76,7 @@ import * as VueRouter from 'vue-router'
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import apiClient from './utils/axios'
-import { LeftOutlined, RightOutlined, DatabaseOutlined, BarChartOutlined, ShoppingCartOutlined, SettingOutlined } from '@ant-design/icons-vue'
+import { LeftOutlined, RightOutlined, DatabaseOutlined, BarChartOutlined, ShoppingCartOutlined, SettingOutlined, RobotOutlined } from '@ant-design/icons-vue'
 const router = (VueRouter as any).useRouter()
 const go = (path: string) => router.push(path)
 const { t } = useI18n()

@@ -12,7 +12,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/integration', component: () => import('../pages/Integration.vue') },
   { path: '/predict', component: () => import('../pages/Predict.vue') },
   { path: '/orders', component: () => import('../pages/Orders.vue'), meta: { requiresAuth: true, role: 'admin' } },
-  { path: '/rules', component: () => import('../pages/Rules.vue'), meta: { requiresAuth: true, role: 'admin' } }
+  { path: '/rules', component: () => import('../pages/Rules.vue'), meta: { requiresAuth: true, role: 'admin' } },
+  { path: '/work-report-agent', component: () => import('../pages/WorkReportAgent.vue'), meta: { requiresAuth: true, role: 'admin' } },
+  { path: '/work-report-chat', component: () => import('../pages/WorkReportChat.vue'), meta: { requiresAuth: true, role: 'admin' } }
 ]
 
 const router = createRouter({

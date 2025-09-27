@@ -48,7 +48,7 @@ AI ERP 系统是一个基于人工智能的企业资源规划系统，集成了�
 ### 环境要求
 - Python 3.9+
 - Node.js 16+
-- MongoDB（可选，支持内存数据库fallback）
+- MongoDB（可选，支持SQLite和内存数据库fallback）
 
 ### 安装和启动
 
@@ -58,44 +58,70 @@ git clone <repository-url>
 cd aierp
 ```
 
-2. **一键启动**
-```bash
-# 启动完整系统（前后端）
-./scripts/start_aierp.sh
-```
+2. **启动方式（三选一）**
 
-3. **访问系统**
-- 🌐 前端界面：http://localhost:5173
-- 🔧 后端API：http://localhost:3127
-- 📚 API文档：http://localhost:3127/docs
+   **方式一：一键启动完整系统（推荐）**
+   ```bash
+   ./start_all.sh
+   ```
 
-### 手动启动（可选）
+   **方式二：分别启动前后端**
+   ```bash
+   # 启动后端（新终端窗口）
+   ./start_backend.sh
+   
+   # 启动前端（新终端窗口）
+   ./start_frontend.sh
+   ```
 
-如果需要分别启动前后端：
-
-```bash
-# 启动后端
-cd backend
-python3 -m pip install -r requirements.txt
-python3 -m uvicorn app.main:app --host 0.0.0.0 --port 3127 --reload
-
-# 启动前端
-cd frontend
-npm install
+   **方式三：手动启动**
+   ```bash
+   # 后端
+   cd backend
+   pip install -r requirements.txt
+   python -m uvicorn app.main:app --host 0.0.0.0 --port 3127 --reload
+   
+   # 前端（新终端）
+   cd frontend
+   npm install
 npm run dev
 ```
 
+3. **访问系统**
+- 🌐 前端界面：http://localhost:5176
+- 🔧 后端API：http://localhost:3127
+- 📚 API文档：http://localhost:3127/docs
+
+### 📋 启动脚本说明
+
+- `start_all.sh` - 一键启动前后端服务（推荐）
+- `start_backend.sh` - 仅启动后端服务
+- `start_frontend.sh` - 仅启动前端服务
+
 ## 📊 数据库配置
 
-### MongoDB配置
-系统默认连接到线上MongoDB服务器：`192.144.231.158:27017`
+### 数据库支持
+系统支持多种数据库连接方式，按优先级排序：
 
-### 环境变量配置（可选）
+1. **SQLite** - 本地文件数据库（推荐，默认使用）
+2. **MongoDB** - 文档数据库
+3. **内存数据库** - 临时存储（重启后数据丢失）
+
+### 数据库配置
+
+**SQLite（默认）**
+- 自动创建 `backend/aierp.db` 文件
+- 无需额外配置，开箱即用
+
+**MongoDB（可选）**
 ```bash
 # 自定义MongoDB连接
 export MONGO_URI="mongodb://192.144.231.158:27017"
 export MONGO_DB="aierp"
+```
 
+**环境变量配置**
+```bash
 # 如果需要认证
 export MONGO_USERNAME="your_username"
 export MONGO_PASSWORD="your_password"

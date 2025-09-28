@@ -22,7 +22,11 @@ def get_memory_db() -> Dict[str, Any]:
             "work_reports": [],
             "employees": [],
             "projects": [],
-            "departments": []
+            "departments": [],
+            "materials": [],
+            "pricing_results": [],
+            "pricing_rules": [],
+            "pricing_history": []
         }
     return _memory_db_instance
 

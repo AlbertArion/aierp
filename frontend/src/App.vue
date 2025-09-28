@@ -2,7 +2,7 @@
   <a-layout class="app-layout">
     <a-layout-header class="app-header">
       <div class="brand">
-        <div class="brand-mark" />
+        <img src="/logo.png" alt="Logo" class="brand-logo" />
         <div class="brand-name">{{ t('brand') }}</div>
       </div>
       <div class="header-right">
@@ -54,9 +54,15 @@
           </a-menu-item>
           <a-menu-item key="6" @click="go('/work-report-chat')">
             <template #icon>
-              <RobotOutlined />
+              <MessageOutlined />
             </template>
             <span v-if="!collapsed">报工对话查询</span>
+          </a-menu-item>
+          <a-menu-item key="7" @click="go('/pricing-agent')">
+            <template #icon>
+              <RobotOutlined />
+            </template>
+            <span v-if="!collapsed">核价智能体</span>
           </a-menu-item>
         </a-menu>
       </a-layout-sider>
@@ -66,7 +72,7 @@
         </div>
       </a-layout-content>
     </a-layout>
-    <a-layout-footer class="app-footer">© 2025 AI ERP</a-layout-footer>
+    <a-layout-footer class="app-footer">©Sinocst 2025 AI ERP</a-layout-footer>
   </a-layout>
   
 </template>
@@ -76,7 +82,7 @@ import * as VueRouter from 'vue-router'
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import apiClient from './utils/axios'
-import { LeftOutlined, RightOutlined, DatabaseOutlined, BarChartOutlined, ShoppingCartOutlined, SettingOutlined, RobotOutlined } from '@ant-design/icons-vue'
+import { LeftOutlined, RightOutlined, DatabaseOutlined, BarChartOutlined, ShoppingCartOutlined, SettingOutlined, RobotOutlined, MessageOutlined } from '@ant-design/icons-vue'
 const router = (VueRouter as any).useRouter()
 const go = (path: string) => router.push(path)
 const { t } = useI18n()
@@ -389,7 +395,7 @@ onMounted(async () => {
   padding: 0 24px;
 }
 .brand { display:flex; align-items:center; gap:10px; }
-.brand-mark { width:10px; height:10px; border-radius:2px; background:#1677ff; box-shadow:0 0 12px rgba(22,119,255,.6); }
+.brand-logo { width:48px; height:48px; object-fit:contain; }
 .brand-name { color: var(--brand-name-color); font-weight:700; letter-spacing:.5px; }
 
 .header-right { 

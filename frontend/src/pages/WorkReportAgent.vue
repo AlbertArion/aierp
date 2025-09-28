@@ -293,7 +293,7 @@ const formVisible = ref(false)
 const viewVisible = ref(false)
 const isEdit = ref(false)
 const advancedSearchKey = ref([])
-const fileList = ref([])
+const fileList = ref<any[]>([])
 const formRef = ref()
 
 // 搜索表单
@@ -305,7 +305,7 @@ const searchForm = reactive({
   status: undefined
 })
 
-const dateRange = ref([])
+const dateRange = ref<[Dayjs, Dayjs] | []>([])
 
 // 搜索结果
 const searchResult = reactive({
@@ -344,7 +344,18 @@ const formRules = {
 }
 
 // 查看数据
-const viewData = ref(null)
+interface ViewData {
+  employee_name: string
+  project_name: string
+  department_name: string
+  report_date: string
+  work_hours: number
+  work_location: string
+  status: string
+  created_at: string
+  work_content: string
+}
+const viewData = ref<ViewData | null>(null)
 
 // 表格列定义
 const columns = [
@@ -427,8 +438,8 @@ const handleSearch = async () => {
   try {
     const params = {
       ...searchForm,
-      start_date: dateRange.value?.[0]?.format('YYYY-MM-DD'),
-      end_date: dateRange.value?.[1]?.format('YYYY-MM-DD'),
+      start_date: (dateRange.value as [Dayjs, Dayjs])?.[0]?.format('YYYY-MM-DD'),
+      end_date: (dateRange.value as [Dayjs, Dayjs])?.[1]?.format('YYYY-MM-DD'),
       page: searchResult.page,
       size: searchResult.size
     }
@@ -476,8 +487,8 @@ const handleExport = async () => {
   try {
     const params = {
       keyword: searchForm.keyword,
-      start_date: dateRange.value?.[0]?.format('YYYY-MM-DD'),
-      end_date: dateRange.value?.[1]?.format('YYYY-MM-DD')
+      start_date: (dateRange.value as [Dayjs, Dayjs])?.[0]?.format('YYYY-MM-DD'),
+      end_date: (dateRange.value as [Dayjs, Dayjs])?.[1]?.format('YYYY-MM-DD')
     }
     
     const { data } = await apiClient.get('/api/work-reports/export', { params })
@@ -556,7 +567,7 @@ const handleImportConfirm = async () => {
   try {
     const file = fileList.value[0]
     const formData = new FormData()
-    formData.append('file', file.originFileObj)
+    formData.append('file', (file as any).originFileObj)
     
     const { data: result } = await apiClient.post('/api/work-reports/upload-excel', formData, {
       headers: {
@@ -685,7 +696,7 @@ const resetForm = () => {
 }
 
 const getStatusColor = (status: string) => {
-  const colors = {
+  const colors: { [key: string]: string } = {
     pending: 'orange',
     approved: 'green',
     rejected: 'red'
@@ -694,7 +705,7 @@ const getStatusColor = (status: string) => {
 }
 
 const getStatusText = (status: string) => {
-  const texts = {
+  const texts: { [key: string]: string } = {
     pending: '待审核',
     approved: '已通过',
     rejected: '已拒绝'

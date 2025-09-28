@@ -318,10 +318,18 @@ class SQLiteCollection:
         """处理文档数据，转换日期等特殊类型"""
         processed = document.copy()
         
-        # 转换日期类型为字符串
+        # 转换特殊类型
         for key, value in processed.items():
             if isinstance(value, (datetime, date)):
                 processed[key] = value.isoformat()
+            elif isinstance(value, list):
+                # 将列表转换为JSON字符串
+                processed[key] = json.dumps(value, ensure_ascii=False)
+            elif isinstance(value, dict):
+                # 将字典转换为JSON字符串
+                processed[key] = json.dumps(value, ensure_ascii=False)
+            elif hasattr(value, 'value') and hasattr(value, '__class__'):  # Enum类型
+                processed[key] = value.value
         
         return processed
 

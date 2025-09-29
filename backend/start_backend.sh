@@ -52,17 +52,17 @@ pip install --no-cache-dir pydantic==2.9.2
 pip install --no-cache-dir python-multipart==0.0.9
 
 # 3. 安装数据处理依赖
-echo "📦 安装数据处理依赖..."
-pip install --no-cache-dir pandas>=2.0.0,<2.1.0
-pip install --no-cache-dir numpy>=1.24.0,<2.0.0
+    echo "📦 安装数据处理依赖..."
+    pip install --no-cache-dir "pandas>=2.0.0,<2.1.0"
+    pip install --no-cache-dir "numpy>=1.24.0,<2.0.0"
 
 # 4. 安装机器学习依赖
 echo "📦 安装机器学习依赖..."
 pip install --no-cache-dir scikit-learn==1.3.2
 
 # 5. 尝试安装statsmodels（可能失败）
-echo "📦 尝试安装statsmodels..."
-if pip install --no-cache-dir statsmodels>=0.14.0; then
+    echo "📦 尝试安装statsmodels..."
+    if pip install --no-cache-dir "statsmodels>=0.14.0"; then
     echo "✅ statsmodels安装成功"
     STATSMODELS_OK=true
 else

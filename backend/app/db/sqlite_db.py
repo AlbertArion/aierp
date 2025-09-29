@@ -340,6 +340,7 @@ def get_sqlite_db():
     """获取SQLite数据库实例"""
     global _sqlite_db_instance
     if _sqlite_db_instance is None:
-        db_path = os.path.join(os.path.dirname(__file__), "..", "..", "aierp.db")
+        # 数据库文件现在位于app/db目录下
+        db_path = os.path.join(os.path.dirname(__file__), "aierp.db")
         _sqlite_db_instance = SQLiteDatabase(db_path)
     return _sqlite_db_instance

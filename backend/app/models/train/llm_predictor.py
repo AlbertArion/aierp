@@ -2,7 +2,15 @@ import os
 import json
 import logging
 from typing import List, Dict, Any, Optional, Tuple
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+# 尝试导入statsmodels，如果失败则使用备选方案
+try:
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    STATSMODELS_AVAILABLE = True
+except ImportError:
+    STATSMODELS_AVAILABLE = False
+    logging.warning("statsmodels未安装，将使用简化的预测方法")
+
 from ...utils.llm.base_client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -213,16 +221,46 @@ class LLMTimeSeriesPredictor:
             if not series:
                 return [0.0] * horizon_months
             
-            # 使用指数平滑
-            model = ExponentialSmoothing(series, trend='add', seasonal=None)
-            fit_model = model.fit()
-            forecast = fit_model.forecast(horizon_months)
-            return forecast.tolist()
+            # 如果statsmodels可用，使用指数平滑
+            if STATSMODELS_AVAILABLE:
+                model = ExponentialSmoothing(series, trend='add', seasonal=None)
+                fit_model = model.fit()
+                forecast = fit_model.forecast(horizon_months)
+                return forecast.tolist()
+            else:
+                # 备选方案：使用简单的移动平均和趋势
+                return self._simple_trend_prediction(series, horizon_months)
             
         except Exception as e:
-            logger.error(f"指数平滑预测失败: {e}")
+            logger.error(f"预测失败: {e}")
             # 最后回退：使用最后一个值
             return [series[-1]] * horizon_months if series else [0.0] * horizon_months
+    
+    def _simple_trend_prediction(self, series: List[float], horizon_months: int) -> List[float]:
+        """简化的趋势预测方法（当statsmodels不可用时使用）"""
+        if not series:
+            return [0.0] * horizon_months
+        
+        if len(series) == 1:
+            return [series[0]] * horizon_months
+        
+        # 计算简单移动平均
+        if len(series) >= 3:
+            recent_avg = sum(series[-3:]) / 3
+            # 计算趋势
+            trend = (series[-1] - series[-3]) / 2
+        else:
+            recent_avg = sum(series) / len(series)
+            trend = series[-1] - series[0] if len(series) > 1 else 0
+        
+        # 生成预测值
+        predictions = []
+        for i in range(1, horizon_months + 1):
+            # 基于趋势和移动平均的简单预测
+            pred_value = recent_avg + trend * i
+            predictions.append(round(pred_value, 2))
+        
+        return predictions
     
     def train_and_evaluate(self, series: List[float], test_size: float = 0.2) -> Dict[str, Any]:
         """

@@ -24,9 +24,16 @@ class DroolsEngine:
         self._initialize_java_vm()
     
     def _initialize_java_vm(self):
-        """初始化Java虚拟机（模拟实现，实际需要配置JVM路径）"""
+        """初始化Java虚拟机（模拟实现）
+        
+        注意：当前使用模拟实现，无需安装jpype1依赖
+        如需使用真实Drools引擎，需要：
+        1. 安装Java运行环境
+        2. 安装jpype1: pip install jpype1
+        3. 取消注释下面的代码并配置正确的JVM路径
+        """
         try:
-            # 在实际部署中，这里需要配置正确的JVM路径
+            # 真实Drools引擎实现（需要Java环境和jpype1）
             # import jpype
             # jpype.startJVM(jpype.getDefaultJVMPath())
             # self.java_vm = jpype.JClass("org.drools.core.impl.KnowledgeBaseImpl")

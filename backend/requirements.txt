@@ -1,21 +1,33 @@
+# AI ERP 系统依赖文件
+# 优化版本，避免复杂的依赖冲突，适合生产环境部署
+
+# 基础Web框架
 fastapi==0.112.2
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
 python-multipart==0.0.9
+
+# 构建工具（解决setuptools问题）
+setuptools>=65.0.0
+wheel>=0.38.0
+
+# 数据库连接
 pymongo==4.8.0
-snowflake-connector-python==3.11.0
+PyMySQL==1.1.1
+
+# 数据处理（核心）
+pandas>=2.0.0,<2.1.0
+numpy>=1.24.0,<2.0.0
+
+# 机器学习（轻量级）
+scikit-learn==1.3.2
+
+# 可选：统计模型（如果安装失败不影响核心功能）
+# statsmodels>=0.14.0
+
+# 其他工具
 requests==2.32.3
 pdfplumber==0.11.4
 openpyxl==3.1.5
-pandas>=2.0.0,<2.1.0
-PyMySQL==1.1.1
-
-# Machine Learning (Lightweight)
-scikit-learn==1.3.2
-numpy==1.24.3
-statsmodels==0.14.0
-
-# Rules Engine
-jpype1==1.4.1
-# Drools将通过Java调用实现，使用JPype作为Python-Java桥接
-
+snowflake-connector-python==3.11.0
+# jpype1==1.4.1  # 已移除：Drools引擎使用模拟实现，无需Java桥接

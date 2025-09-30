@@ -67,6 +67,9 @@ backend/data/
 *.sqlite
 *.sqlite3
 
+# Exception: Allow specific database files
+!app/db/aierp.db
+
 # Logs
 *.log
 logs/

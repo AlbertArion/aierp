@@ -337,7 +337,7 @@ async def ai_query(
         keyword = None
         start_date = None
         end_date = None
-        
+
         # 添加详细调试日志
         print("=" * 50)
         print(f"🔍 AI查询请求开始")

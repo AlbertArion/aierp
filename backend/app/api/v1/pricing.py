@@ -4,6 +4,9 @@
 import logging
 import time
 import random
+import re
+import os
+from datetime import date, datetime, timedelta
 from typing import List, Dict, Any
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse
@@ -418,3 +421,205 @@ async def create_demo_data(
 
 # 导入PricingHistory（需要添加到schemas中）
 from ...schemas.pricing import PricingHistory
+
+# === AI对话式查询接口 ===
+@router.post("/ai-query")
+async def ai_query(
+    payload: Dict[str, Any],
+    repo: PricingRepository = Depends(get_pricing_repository)
+):
+    """
+    对话式文本查询核价：
+    - 输入自然语言，如："查询纺机主轴的价格"、"帮我核价齿轮"
+    - 输出检索命中的物料表格数据
+    """
+    try:
+        text = str(payload.get("query", "")).strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="query不能为空")
+
+        # 规则式轻量解析：提取可能的物料名称/规格/关键词
+        material_name = None
+        specification = None
+        keyword = None
+
+        # 提取"物料XXX/XXX物料"
+        m = re.search(r"物料([\u4e00-\u9fa5A-Za-z0-9_\-]+)|([\u4e00-\u9fa5A-Za-z0-9_\-]+)物料", text)
+        if m:
+            material_name = m.group(1) or m.group(2)
+
+        # 提取"查询XXX的价格/XXX核价" => 认为是物料名称
+        m = re.search(r"查询([\u4e00-\u9fa5A-Za-z0-9_\-]+)的?价格|([\u4e00-\u9fa5A-Za-z0-9_\-]+)核价", text)
+        if m:
+            material_name = m.group(1) or m.group(2)
+
+        # 提取"规格/型号"关键词
+        m = re.findall(r"(规格\S+|型号\S+|Φ\S+|模数\S+)", text)
+        if m:
+            specification = " ".join(m)
+
+        # 提取通用关键词
+        m = re.findall(r"(主轴|齿轮|轴承|螺栓|螺母|垫圈)", text)
+        if m:
+            keyword = " ".join(m)
+        else:
+            # 回退：去除停用词后的剩余词作为keyword
+            stop = ["查询", "价格", "核价", "的", "一下", "下", "请", "帮我", "物料"]
+            tmp = text
+            for s in stop:
+                tmp = tmp.replace(s, "")
+            tmp = tmp.strip()
+            if tmp:
+                keyword = tmp
+
+        # 检测是否为闲聊（类似报工智能体）
+        def _is_smalltalk(q: str) -> bool:
+            smalltalk_patterns = [
+                r"^你好$", r"^在吗$", r"^嗨$", r"^hello$", r"^hi$",
+                r"帮助", r"说明", r"怎么用", r"示例", r"功能",
+            ]
+            if any(re.search(p, q.strip(), re.IGNORECASE) for p in smalltalk_patterns):
+                return True
+            # 无实体且字数很短也视为聊天
+            no_entity = not any([material_name, specification]) and not keyword
+            return no_entity and len(q.strip()) <= 12
+
+        # 获取LLM配置
+        use_llm = os.getenv("USE_LLM_PRICING", "true").lower() == "true"
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        openai_base_url = os.getenv("OPENAI_BASE_URL")
+        openai_model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+
+        if _is_smalltalk(text):
+            explanation = None
+            if use_llm and openai_api_key and openai_base_url:
+                try:
+                    import requests
+                    conv_system = (
+                        "你是企业核价助手。用简洁中文回答用户的问候或问题，"
+                        "可提示使用方式与示例问法（如：查询纺机主轴价格/帮我核价齿轮），"
+                        "不要编造具体数据或表格。"
+                    )
+                    resp_chat = requests.post(
+                        f"{openai_base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {openai_api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": openai_model,
+                            "messages": [
+                                {"role": "system", "content": conv_system},
+                                {"role": "user", "content": text}
+                            ],
+                            "max_tokens": 200,
+                            "temperature": 0.7
+                        },
+                        timeout=10
+                    )
+                    data_chat = resp_chat.json()
+                    explanation = (
+                        data_chat.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content")
+                    )
+                except Exception as _e:
+                    logger.warning(f"LLM聊天回答失败: {_e}")
+            # 无LLM或失败，给默认说明
+            if not explanation:
+                explanation = (
+                    "你好，我是核价智能体。你可以这样问我：1) 查询纺机主轴价格；"
+                    "2) 帮我核价齿轮；3) 规格Φ50×200mm的物料价格。"
+                )
+            return {
+                "success": True,
+                "query": text,
+                "parsed": {
+                    "material_name": None,
+                    "specification": None,
+                    "keyword": None
+                },
+                "data": {"rows": [], "total": 0, "explanation": explanation}
+            }
+
+        # 执行查询
+        materials = await repo.search_materials(
+            material_name=material_name,
+            specification=specification,
+            keyword=keyword,
+            limit=20
+        )
+
+        # 转换为表格格式
+        rows = []
+        for material in materials:
+            rows.append({
+                "id": material.id,
+                "material_code": material.material_code,
+                "material_name": material.material_name,
+                "specification": material.specification,
+                "quantity": material.quantity,
+                "unit": material.unit,
+                "complexity": material.complexity.value if hasattr(material.complexity, 'value') else str(material.complexity),
+                "process_requirements": ", ".join(material.process_requirements) if material.process_requirements else "",
+                "estimated_price": getattr(material, 'estimated_price', 0),
+                "status": "已核价" if getattr(material, 'estimated_price', 0) > 0 else "待核价"
+            })
+
+        # 生成解释说明
+        explanation = None
+        if use_llm and openai_api_key and openai_base_url:
+            try:
+                import requests
+                query_system = (
+                    "你是企业核价助手。根据查询结果生成简洁的中文解释，"
+                    "说明找到了什么物料、价格情况等，不要编造数据。"
+                )
+                resp_query = requests.post(
+                    f"{openai_base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {openai_api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": openai_model,
+                        "messages": [
+                            {"role": "system", "content": query_system},
+                            {"role": "user", "content": f"查询：{text}\n结果：找到{len(rows)}条物料记录"},
+                            {"role": "assistant", "content": "请生成简洁的解释说明"}
+                        ],
+                        "max_tokens": 150,
+                        "temperature": 0.5
+                    },
+                    timeout=10
+                )
+                data_query = resp_query.json()
+                explanation = (
+                    data_query.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content")
+                )
+            except Exception as _e:
+                logger.warning(f"LLM查询解释失败: {_e}")
+
+        # 如果没有LLM解释，提供默认说明
+        if not explanation:
+            if rows:
+                explanation = f"找到 {len(rows)} 条相关物料记录，包括价格和规格信息。"
+            else:
+                explanation = "未找到相关物料数据，请尝试其他关键词或检查物料名称。"
+
+        return {
+            "success": True,
+            "query": text,
+            "parsed": {
+                "material_name": material_name,
+                "specification": specification,
+                "keyword": keyword
+            },
+            "data": {
+                "rows": rows,
+                "total": len(rows),
+                "explanation": explanation
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI查询失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -201,7 +201,7 @@
       <a-upload-dragger
         :file-list="fileList"
         :before-upload="beforeUpload"
-        :remove="removeFile"
+        @remove="removeFile"
         accept=".pdf,.xlsx,.xls"
       >
         <p class="ant-upload-drag-icon">

@@ -1,773 +1,226 @@
-<!-- frontend/src/pages/WorkReportAgent.vue -->
 <template>
-  <div class="work-report-agent">
-    <a-card title="报工智能体" :bordered="false">
-      <!-- 搜索区域 -->
-      <div class="search-section">
-        <a-row :gutter="16">
-          <a-col :span="8">
-            <a-input
-              v-model:value="searchForm.keyword"
-              placeholder="输入关键字搜索（员工姓名、项目名称、工作内容等）"
-              @pressEnter="handleSearch"
-              allowClear
-            >
-              <template #prefix>
-                <SearchOutlined />
-              </template>
-            </a-input>
-          </a-col>
-          <a-col :span="4">
-            <a-input
-              v-model:value="searchForm.employee_name"
-              placeholder="员工姓名"
-              allowClear
+  <div class="work-agent-page">
+    <div class="chat-header">
+      <h3>💬 AI 报工智能体</h3>
+    </div>
+    <div class="chat-window">
+      <div v-for="(m, idx) in messages" :key="idx" class="msg" :class="m.role">
+        <div v-if="m.role === 'user'" class="bubble user">{{ m.content }}</div>
+        <div v-else class="bubble ai">
+          <div v-if="m.type === 'text'" v-html="renderMarkdown(m.content)"></div>
+          <div v-else-if="m.type === 'typing'" class="typing-animation">
+            <span>{{ m.content }}</span>
+            <span class="typing-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </span>
+          </div>
+          <div v-else-if="m.type === 'table'" class="table-wrapper">
+            <a-table
+              :columns="columns"
+              :data-source="m.rows"
+              :pagination="false"
+              row-key="id"
+              size="small"
+              :scroll="{ x: 720 }"
+              class="chat-table"
             />
-          </a-col>
-          <a-col :span="4">
-            <a-input
-              v-model:value="searchForm.project_name"
-              placeholder="项目名称"
-              allowClear
-            />
-          </a-col>
-          <a-col :span="4">
-            <a-select
-              v-model:value="searchForm.status"
-              placeholder="状态"
-              allowClear
-              style="width: 100%"
-            >
-              <a-select-option value="pending">待审核</a-select-option>
-              <a-select-option value="approved">已通过</a-select-option>
-              <a-select-option value="rejected">已拒绝</a-select-option>
-            </a-select>
-          </a-col>
-          <a-col :span="4">
-            <a-space>
-              <a-button type="primary" @click="handleSearch" :loading="loading">
-                <SearchOutlined /> 搜索
-              </a-button>
-              <a-button @click="handleReset">
-                <ReloadOutlined /> 重置
-              </a-button>
-            </a-space>
-          </a-col>
-        </a-row>
-        
-        <!-- 高级搜索 -->
-        <a-collapse v-model:activeKey="advancedSearchKey" ghost>
-          <a-collapse-panel key="advanced" header="高级搜索">
-            <a-row :gutter="16">
-              <a-col :span="6">
-                <a-range-picker
-                  v-model:value="dateRange"
-                  :placeholder="['开始日期', '结束日期']"
-                />
-              </a-col>
-              <a-col :span="6">
-                <a-input
-                  v-model:value="searchForm.department_name"
-                  placeholder="部门名称"
-                  allowClear
-                />
-              </a-col>
-              <a-col :span="6">
-                <a-button type="primary" @click="handleAdvancedSearch">
-                  高级搜索
-                </a-button>
-              </a-col>
-            </a-row>
-          </a-collapse-panel>
-        </a-collapse>
       </div>
-
-      <a-divider />
-
-      <!-- 统计信息 -->
-      <div class="statistics-section">
-        <a-row :gutter="16">
-          <a-col :span="6">
-            <a-statistic title="总报工记录" :value="statistics.total_reports" />
-          </a-col>
-          <a-col :span="6">
-            <a-statistic title="总工作时长" :value="statistics.total_hours" suffix="小时" />
-          </a-col>
-          <a-col :span="6">
-            <a-statistic title="平均工作时长" :value="statistics.avg_hours" suffix="小时" :precision="2" />
-          </a-col>
-          <a-col :span="6">
-            <a-statistic title="搜索结果" :value="searchResult.total" />
-          </a-col>
-        </a-row>
-      </div>
-
-      <a-divider />
-
-      <!-- 结果展示 -->
-      <div class="results-section">
-        <div class="table-header">
-          <a-space>
-            <a-button @click="handleExport" :loading="exportLoading">
-              <DownloadOutlined /> 导出数据
-            </a-button>
-            <a-button @click="handleImport">
-              <UploadOutlined /> 导入数据
-            </a-button>
-            <a-button type="primary" @click="showCreateModal">
-              <PlusOutlined /> 新增报工
-            </a-button>
-          </a-space>
         </div>
-
-        <a-table
-          :dataSource="searchResult.data"
-          :columns="columns"
-          :loading="loading"
-          :pagination="pagination"
-          rowKey="id"
-          :scroll="{ x: 1200 }"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'status'">
-              <a-tag :color="getStatusColor(record.status)">
-                {{ getStatusText(record.status) }}
-              </a-tag>
-            </template>
-            <template v-else-if="column.key === 'work_hours'">
-              {{ record.work_hours }}小时
-            </template>
-            <template v-else-if="column.key === 'report_date'">
-              {{ formatDate(record.report_date) }}
-            </template>
-            <template v-else-if="column.key === 'actions'">
-              <a-space>
-                <a-button size="small" @click="handleView(record)">查看</a-button>
-                <a-button size="small" type="primary" @click="handleEdit(record)">编辑</a-button>
-                <a-button size="small" danger @click="handleDelete(record)">删除</a-button>
-              </a-space>
-            </template>
-          </template>
-        </a-table>
       </div>
-    </a-card>
-
-    <!-- 数据导入模态框 -->
-    <a-modal
-      v-model:open="importVisible"
-      title="导入报工数据"
-      @ok="handleImportConfirm"
-      :confirmLoading="importLoading"
-      width="600px"
-    >
-      <a-upload-dragger
-        v-model:fileList="fileList"
-        :beforeUpload="beforeUpload"
-        accept=".xlsx,.xls"
-        :multiple="false"
-        @remove="handleFileRemove"
-      >
-        <p class="ant-upload-drag-icon">
-          <InboxOutlined />
-        </p>
-        <p class="ant-upload-text">点击或拖拽文件到此区域上传</p>
-        <p class="ant-upload-hint">支持 .xlsx 和 .xls 格式</p>
-      </a-upload-dragger>
-      
-      <div style="margin-top: 16px;">
-        <a-alert
-          message="导入说明"
-          description="请确保Excel文件包含以下列：员工姓名、项目名称、部门名称、报工日期、工作时长、工作内容等字段。"
-          type="info"
-          show-icon
-        />
+    </div>
+    <div class="input-bar">
+      <a-input v-model:value="input" placeholder="例如：查询AI智能助手项目的报工情况 / 查询王五9月的报工" @pressEnter="onSend" />
+      <a-button type="primary" :loading="loading" @click="onSend">发送</a-button>
       </div>
-    </a-modal>
-
-    <!-- 创建/编辑报工模态框 -->
-    <a-modal
-      v-model:open="formVisible"
-      :title="isEdit ? '编辑报工记录' : '新增报工记录'"
-      @ok="handleFormSubmit"
-      :confirmLoading="formLoading"
-      width="800px"
-    >
-      <a-form
-        :model="formData"
-        :label-col="{ span: 6 }"
-        :wrapper-col="{ span: 16 }"
-        :rules="formRules"
-        ref="formRef"
-      >
-        <a-form-item label="员工姓名" name="employee_name">
-          <a-input v-model:value="formData.employee_name" placeholder="请输入员工姓名" />
-        </a-form-item>
-        <a-form-item label="项目名称" name="project_name">
-          <a-input v-model:value="formData.project_name" placeholder="请输入项目名称" />
-        </a-form-item>
-        <a-form-item label="部门名称" name="department_name">
-          <a-input v-model:value="formData.department_name" placeholder="请输入部门名称" />
-        </a-form-item>
-        <a-form-item label="报工日期" name="report_date">
-          <a-date-picker v-model:value="formData.report_date" style="width: 100%" />
-        </a-form-item>
-        <a-form-item label="工作时长" name="work_hours">
-          <a-input-number
-            v-model:value="formData.work_hours"
-            :min="0"
-            :max="24"
-            :precision="2"
-            style="width: 100%"
-            placeholder="请输入工作时长"
-          />
-        </a-form-item>
-        <a-form-item label="工作内容" name="work_content">
-          <a-textarea
-            v-model:value="formData.work_content"
-            :rows="4"
-            placeholder="请输入工作内容"
-          />
-        </a-form-item>
-        <a-form-item label="工作地点" name="work_location">
-          <a-input v-model:value="formData.work_location" placeholder="请输入工作地点" />
-        </a-form-item>
-        <a-form-item label="状态" name="status">
-          <a-select v-model:value="formData.status" placeholder="请选择状态">
-            <a-select-option value="pending">待审核</a-select-option>
-            <a-select-option value="approved">已通过</a-select-option>
-            <a-select-option value="rejected">已拒绝</a-select-option>
-          </a-select>
-        </a-form-item>
-      </a-form>
-    </a-modal>
-
-    <!-- 查看详情模态框 -->
-    <a-modal
-      v-model:open="viewVisible"
-      title="报工记录详情"
-      :footer="null"
-      width="800px"
-    >
-      <a-descriptions :column="2" bordered v-if="viewData">
-        <a-descriptions-item label="员工姓名">{{ viewData.employee_name }}</a-descriptions-item>
-        <a-descriptions-item label="项目名称">{{ viewData.project_name }}</a-descriptions-item>
-        <a-descriptions-item label="部门名称">{{ viewData.department_name }}</a-descriptions-item>
-        <a-descriptions-item label="报工日期">{{ formatDate(viewData.report_date) }}</a-descriptions-item>
-        <a-descriptions-item label="工作时长">{{ viewData.work_hours }}小时</a-descriptions-item>
-        <a-descriptions-item label="工作地点">{{ viewData.work_location }}</a-descriptions-item>
-        <a-descriptions-item label="状态">
-          <a-tag :color="getStatusColor(viewData.status)">
-            {{ getStatusText(viewData.status) }}
-          </a-tag>
-        </a-descriptions-item>
-        <a-descriptions-item label="创建时间">{{ formatDateTime(viewData.created_at) }}</a-descriptions-item>
-        <a-descriptions-item label="工作内容" :span="2">
-          <div style="white-space: pre-wrap;">{{ viewData.work_content }}</div>
-        </a-descriptions-item>
-      </a-descriptions>
-    </a-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed } from 'vue'
-import { message, Modal } from 'ant-design-vue'
-import { 
-  SearchOutlined, 
-  ReloadOutlined, 
-  DownloadOutlined, 
-  UploadOutlined,
-  InboxOutlined,
-  PlusOutlined
-} from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
+import { reactive, ref, computed } from 'vue'
 import apiClient from '../utils/axios'
-import dayjs, { Dayjs } from 'dayjs'
+import { marked } from 'marked'
 
-// 响应式数据
+type ChatRow = any
+
+const input = ref('')
 const loading = ref(false)
-const exportLoading = ref(false)
-const importLoading = ref(false)
-const formLoading = ref(false)
-const importVisible = ref(false)
-const formVisible = ref(false)
-const viewVisible = ref(false)
-const isEdit = ref(false)
-const advancedSearchKey = ref([])
-const fileList = ref<any[]>([])
-const formRef = ref()
+const messages = reactive<Array<{ role: 'user' | 'ai', content: string, type?: 'text' | 'table' | 'typing', rows?: ChatRow[] }>>([
+  { role: 'ai', content: '你好，我是 AI 报工智能体。直接用自然语言问我，例如：“查询AI智能助手项目的报工情况”。', type: 'text' }
+])
 
-// 搜索表单
-const searchForm = reactive({
-  keyword: '',
-  employee_name: '',
-  project_name: '',
-  department_name: '',
-  status: undefined
-})
-
-const dateRange = ref<[Dayjs, Dayjs] | []>([])
-
-// 搜索结果
-const searchResult = reactive({
-  data: [],
-  total: 0,
-  page: 1,
-  size: 20
-})
-
-// 统计信息
-const statistics = reactive({
-  total_reports: 0,
-  total_hours: 0,
-  avg_hours: 0
-})
-
-// 表单数据
-const formData = reactive({
-  employee_name: '',
-  project_name: '',
-  department_name: '',
-  report_date: null as Dayjs | null,
-  work_hours: null as number | null,
-  work_content: '',
-  work_location: '',
-  status: 'pending'
-})
-
-// 表单验证规则
-const formRules = {
-  employee_name: [{ required: true, message: '请输入员工姓名', trigger: 'blur' }],
-  project_name: [{ required: true, message: '请输入项目名称', trigger: 'blur' }],
-  department_name: [{ required: true, message: '请输入部门名称', trigger: 'blur' }],
-  report_date: [{ required: true, message: '请选择报工日期', trigger: 'change' }],
-  work_hours: [{ required: true, message: '请输入工作时长', trigger: 'blur' }]
-}
-
-// 查看数据
-interface ViewData {
-  employee_name: string
-  project_name: string
-  department_name: string
-  report_date: string
-  work_hours: number
-  work_location: string
-  status: string
-  created_at: string
-  work_content: string
-}
-const viewData = ref<ViewData | null>(null)
-
-// 表格列定义
 const columns = [
-  {
-    title: '员工姓名',
-    dataIndex: 'employee_name',
-    key: 'employee_name',
-    width: 100,
-    fixed: 'left'
-  },
-  {
-    title: '项目名称',
-    dataIndex: 'project_name',
-    key: 'project_name',
-    width: 150
-  },
-  {
-    title: '部门',
-    dataIndex: 'department_name',
-    key: 'department_name',
-    width: 100
-  },
-  {
-    title: '报工日期',
-    dataIndex: 'report_date',
-    key: 'report_date',
-    width: 120
-  },
-  {
-    title: '工作时长',
-    dataIndex: 'work_hours',
-    key: 'work_hours',
-    width: 100
-  },
-  {
-    title: '工作内容',
-    dataIndex: 'work_content',
-    key: 'work_content',
-    width: 200,
-    ellipsis: true
-  },
-  {
-    title: '工作地点',
-    dataIndex: 'work_location',
-    key: 'work_location',
-    width: 120
-  },
-  {
-    title: '状态',
-    dataIndex: 'status',
-    key: 'status',
-    width: 80
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 150,
-    fixed: 'right'
-  }
+  { title: '员工姓名', dataIndex: 'employee_name', key: 'employee_name' },
+  { title: '项目名称', dataIndex: 'project_name', key: 'project_name' },
+  { title: '部门', dataIndex: 'department_name', key: 'department_name' },
+  { title: '报工日期', dataIndex: 'report_date', key: 'report_date' },
+  { title: '工作时长', dataIndex: 'work_hours', key: 'work_hours' },
+  { title: '工作内容', dataIndex: 'work_content', key: 'work_content', ellipsis: true },
+  { title: '工作地点', dataIndex: 'work_location', key: 'work_location' }
 ]
 
-// 分页配置
-const pagination = computed(() => ({
-  current: searchResult.page,
-  pageSize: searchResult.size,
-  total: searchResult.total,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total: number) => `共 ${total} 条记录`,
-  onChange: (page: number, size: number) => {
-    searchResult.page = page
-    searchResult.size = size
-    handleSearch()
-  }
-}))
+// Markdown渲染函数
+const renderMarkdown = (content: string): string => {
+  if (!content) return ''
+  const result = marked(content, {
+    breaks: true,
+    gfm: true
+  })
+  return typeof result === 'string' ? result : result.toString()
+}
 
-// 方法
-const handleSearch = async () => {
+const onSend = async () => {
+  const q = input.value.trim()
+  if (!q) return
+  messages.push({ role: 'user', content: q })
+  input.value = ''
   loading.value = true
+  
+  // 移动端收起软键盘
+  if (window.innerWidth <= 991) {
+    const inputElement = document.querySelector('.ant-input') as HTMLInputElement
+    if (inputElement) {
+      inputElement.blur()
+    }
+  }
   try {
-    const params = {
-      ...searchForm,
-      start_date: (dateRange.value as [Dayjs, Dayjs])?.[0]?.format('YYYY-MM-DD'),
-      end_date: (dateRange.value as [Dayjs, Dayjs])?.[1]?.format('YYYY-MM-DD'),
-      page: searchResult.page,
-      size: searchResult.size
-    }
-    
-    console.log('搜索参数:', params)
-    const { data } = await apiClient.get('/api/work-reports/search', { params })
-    console.log('搜索结果:', data)
-    
+    const typingIndex = messages.length
+    messages.push({ role: 'ai', content: '正在思考', type: 'typing' })
+    // 强制清除缓存，添加随机参数
+    const timestamp = Date.now()
+    const random = Math.random().toString(36).substring(7)
+    const { data } = await apiClient.post(`/api/work-reports/ai-query?_t=${timestamp}&_r=${random}`, { query: q, size: 20 })
+    console.log('API响应数据:', data) // 调试信息
+    console.log('请求时间戳:', timestamp) // 调试信息
     if (data.success) {
-      searchResult.data = data.data.data
-      searchResult.total = data.data.total
+      messages.splice(typingIndex, 1)
+      const explanation: string | undefined = data.data?.explanation
+      const rows: ChatRow[] = data.data?.rows || []
+      console.log('解析结果:', { explanation, rowsCount: rows.length }) // 调试信息
+      if (explanation) {
+        messages.push({ role: 'ai', content: explanation, type: 'text' })
+      }
+      if (rows.length > 0) {
+        messages.push({ role: 'ai', content: '', type: 'table', rows })
+      } else if (!explanation) {
+        messages.push({ role: 'ai', content: '未找到相关报工记录，可尝试更换关键词。', type: 'text' })
+      }
+    } else {
+      messages.splice(typingIndex, 1)
+      message.error('查询失败')
     }
-  } catch (error: any) {
-    console.error('搜索失败:', error)
-    console.error('错误详情:', error.response?.data || error.message)
-    message.error('搜索失败: ' + (error.response?.data?.detail || error.message))
-    // 设置空数据避免显示错误
-    searchResult.data = []
-    searchResult.total = 0
+  } catch (e: any) {
+    const last = messages[messages.length - 1]
+    if (last?.type === 'typing') messages.pop()
+    message.error('查询失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     loading.value = false
   }
 }
-
-const handleReset = () => {
-  Object.assign(searchForm, {
-    keyword: '',
-    employee_name: '',
-    project_name: '',
-    department_name: '',
-    status: undefined
-  })
-  dateRange.value = []
-  searchResult.page = 1
-  handleSearch()
-}
-
-const handleAdvancedSearch = () => {
-  advancedSearchKey.value = []
-  handleSearch()
-}
-
-const handleExport = async () => {
-  exportLoading.value = true
-  try {
-    const params = {
-      keyword: searchForm.keyword,
-      start_date: (dateRange.value as [Dayjs, Dayjs])?.[0]?.format('YYYY-MM-DD'),
-      end_date: (dateRange.value as [Dayjs, Dayjs])?.[1]?.format('YYYY-MM-DD')
-    }
-    
-    const { data } = await apiClient.get('/api/work-reports/export', { params })
-    if (data.success) {
-      // 导出Excel文件
-      const csvContent = convertToCSV(data.data)
-      downloadCSV(csvContent, `报工数据_${dayjs().format('YYYY-MM-DD')}.csv`)
-      message.success('导出成功')
-    }
-  } catch (error: any) {
-    message.error('导出失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    exportLoading.value = false
-  }
-}
-
-const convertToCSV = (data: any[]) => {
-  if (!data.length) return ''
-  
-  const headers = Object.keys(data[0])
-  const csvRows = [
-    headers.join(','),
-    ...data.map(row => 
-      headers.map(header => {
-        const value = row[header]
-        return typeof value === 'string' ? `"${value}"` : value
-      }).join(',')
-    )
-  ]
-  
-  return csvRows.join('\n')
-}
-
-const downloadCSV = (content: string, filename: string) => {
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' })
-  const link = document.createElement('a')
-  const url = URL.createObjectURL(blob)
-  link.setAttribute('href', url)
-  link.setAttribute('download', filename)
-  link.style.visibility = 'hidden'
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-}
-
-const handleImport = () => {
-  importVisible.value = true
-}
-
-const beforeUpload = (file: File) => {
-  const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-                  file.type === 'application/vnd.ms-excel'
-  if (!isExcel) {
-    message.error('只能上传 Excel 文件!')
-    return false
-  }
-  const isLt10M = file.size / 1024 / 1024 < 10
-  if (!isLt10M) {
-    message.error('文件大小不能超过 10MB!')
-    return false
-  }
-  return false // 阻止自动上传
-}
-
-const handleFileRemove = () => {
-  fileList.value = []
-}
-
-const handleImportConfirm = async () => {
-  if (fileList.value.length === 0) {
-    message.error('请选择要上传的文件')
-    return
-  }
-  
-  importLoading.value = true
-  try {
-    const file = fileList.value[0]
-    const formData = new FormData()
-    formData.append('file', (file as any).originFileObj)
-    
-    const { data: result } = await apiClient.post('/api/work-reports/upload-excel', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
-    })
-    
-    if (result.success) {
-      message.success(`成功导入 ${result.count} 条记录`)
-      importVisible.value = false
-      fileList.value = []
-      await loadStatistics()
-      await handleSearch()
-    }
-  } catch (error: any) {
-    message.error('导入失败: ' + (error.response?.data?.detail || error.message))
-  } finally {
-    importLoading.value = false
-  }
-}
-
-const showCreateModal = () => {
-  isEdit.value = false
-  resetForm()
-  formVisible.value = true
-}
-
-const handleView = async (record: any) => {
-  try {
-    const { data } = await apiClient.get(`/api/work-reports/${record.id}`)
-    if (data.success) {
-      viewData.value = data.data
-      viewVisible.value = true
-    }
-  } catch (error: any) {
-    message.error('获取详情失败: ' + (error.response?.data?.detail || error.message))
-  }
-}
-
-const handleEdit = (record: any) => {
-  isEdit.value = true
-  Object.assign(formData, {
-    employee_name: record.employee_name || '',
-    project_name: record.project_name || '',
-    department_name: record.department_name || '',
-    report_date: record.report_date ? dayjs(record.report_date) : null,
-    work_hours: record.work_hours || null,
-    work_content: record.work_content || '',
-    work_location: record.work_location || '',
-    status: record.status || 'pending'
-  })
-  formVisible.value = true
-}
-
-const handleDelete = (record: any) => {
-  Modal.confirm({
-    title: '确认删除',
-    content: '确定要删除这条报工记录吗？',
-    onOk: async () => {
-      try {
-        const { data } = await apiClient.delete(`/api/work-reports/${record.id}`)
-        if (data.success) {
-          message.success('删除成功')
-          await handleSearch()
-          await loadStatistics()
-        }
-      } catch (error: any) {
-        message.error('删除失败: ' + (error.response?.data?.detail || error.message))
-      }
-    }
-  })
-}
-
-const handleFormSubmit = async () => {
-  try {
-    await formRef.value.validate()
-    
-    formLoading.value = true
-    
-    const submitData = {
-      employee_name: formData.employee_name,
-      project_name: formData.project_name,
-      department_name: formData.department_name,
-      report_date: formData.report_date?.format('YYYY-MM-DD'),
-      work_hours: formData.work_hours,
-      work_content: formData.work_content,
-      work_location: formData.work_location,
-      status: formData.status
-    }
-    
-    if (isEdit.value) {
-      // 编辑逻辑 - 这里需要获取当前记录的ID
-      message.info('编辑功能需要完善，请联系开发人员')
-    } else {
-      // 创建逻辑
-      const { data } = await apiClient.post('/api/work-reports/', submitData)
-      if (data.success) {
-        message.success('创建成功')
-        formVisible.value = false
-        await handleSearch()
-        await loadStatistics()
-      }
-    }
-  } catch (error: any) {
-    if (error.errorFields) {
-      message.error('请检查表单填写')
-    } else {
-      message.error('提交失败: ' + (error.response?.data?.detail || error.message))
-    }
-  } finally {
-    formLoading.value = false
-  }
-}
-
-const resetForm = () => {
-  Object.assign(formData, {
-    employee_name: '',
-    project_name: '',
-    department_name: '',
-    report_date: null,
-    work_hours: null,
-    work_content: '',
-    work_location: '',
-    status: 'pending'
-  })
-}
-
-const getStatusColor = (status: string) => {
-  const colors: { [key: string]: string } = {
-    pending: 'orange',
-    approved: 'green',
-    rejected: 'red'
-  }
-  return colors[status] || 'default'
-}
-
-const getStatusText = (status: string) => {
-  const texts: { [key: string]: string } = {
-    pending: '待审核',
-    approved: '已通过',
-    rejected: '已拒绝'
-  }
-  return texts[status] || status
-}
-
-const formatDate = (date: string | Date) => {
-  if (!date) return ''
-  return dayjs(date).format('YYYY-MM-DD')
-}
-
-const formatDateTime = (date: string | Date) => {
-  if (!date) return ''
-  return dayjs(date).format('YYYY-MM-DD HH:mm:ss')
-}
-
-const loadStatistics = async () => {
-  try {
-    console.log('开始加载统计信息...')
-    const { data } = await apiClient.get('/api/work-reports/statistics')
-    console.log('统计信息响应:', data)
-    if (data.success) {
-      Object.assign(statistics, data.data)
-      console.log('统计信息加载成功:', statistics)
-    }
-  } catch (error: any) {
-    console.error('加载统计信息失败:', error)
-    console.error('错误详情:', error.response?.data || error.message)
-    // 设置默认值避免显示错误
-    Object.assign(statistics, {
-      total_reports: 0,
-      total_hours: 0,
-      avg_hours: 0
-    })
-  }
-}
-
-// 生命周期
-onMounted(() => {
-  loadStatistics()
-  handleSearch()
-})
 </script>
 
 <style scoped>
-.work-report-agent {
-  padding: 24px;
+::deep(.app-content) { height: 100vh !important; overflow: hidden !important; padding: 0 !important; }
+::deep(.page-container) { height: 100vh !important; overflow: hidden !important; padding: 0 !important; margin: 0 !important; max-width: none !important; }
+
+.work-agent-page { height: calc(100vh - 176px); display: flex; flex-direction: column; background: white; overflow: hidden; position: relative; }
+.work-agent-page > * { box-sizing: border-box; }
+
+.chat-header { flex: 0 0 60px; padding: 12px 24px; border-bottom: 1px solid #f0f0f0; background: #fafafa; display:flex; align-items:center; }
+.chat-header h3 { margin: 0; color: #333; font-size: 16px; font-weight: 600; }
+
+.chat-window { flex: 1 1 0; overflow-y: auto; padding: 16px 24px; min-height: 0; }
+.msg { display: flex; margin: 12px 0; }
+.msg.user { justify-content: flex-end; }
+.bubble { max-width: 80%; padding: 12px 16px; border-radius: 12px; line-height: 1.6; word-wrap: break-word; }
+.bubble.user { background: #e6f4ff; color: #1890ff; border-bottom-right-radius: 4px; }
+.bubble.ai { background: #f5f5f5; color: #333; border-bottom-left-radius: 4px; }
+
+.table-wrapper { width: 100%; overflow-x: auto; }
+.table-wrapper::-webkit-scrollbar { height: 6px; }
+.table-wrapper::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 3px; }
+.table-wrapper::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
+
+.input-bar { flex: 0 0 64px; display: flex; gap: 12px; align-items: center; padding: 12px 16px; background: white; border-top: 1px solid #f0f0f0; }
+
+/* typing 动画 */
+.typing-animation { display: flex; align-items: center; gap: 6px; }
+.typing-dots { display: flex; gap: 3px; }
+.typing-dots span { width: 6px; height: 6px; border-radius: 50%; background-color: #1890ff; animation: typing 1.4s infinite ease-in-out; }
+.typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+.typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+.typing-dots span:nth-child(3) { animation-delay: 0s; }
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0.8); opacity: 0.3; }
+  40% { transform: scale(1); opacity: 1; }
 }
 
-.search-section {
-  margin-bottom: 24px;
+/* Markdown样式 */
+.bubble.ai :deep(h1),
+.bubble.ai :deep(h2),
+.bubble.ai :deep(h3),
+.bubble.ai :deep(h4),
+.bubble.ai :deep(h5),
+.bubble.ai :deep(h6) {
+  margin: 8px 0 4px 0;
+  font-weight: 600;
+  color: #333;
 }
 
-.statistics-section {
-  margin-bottom: 24px;
+.bubble.ai :deep(p) {
+  margin: 4px 0;
+  line-height: 1.6;
 }
 
-.table-header {
-  margin-bottom: 16px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.bubble.ai :deep(ul),
+.bubble.ai :deep(ol) {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.bubble.ai :deep(li) {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+
+.bubble.ai :deep(strong) {
+  font-weight: 600;
+  color: #1890ff;
+}
+
+.bubble.ai :deep(em) {
+  font-style: italic;
+  color: #666;
+}
+
+.bubble.ai :deep(code) {
+  background: #f5f5f5;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.bubble.ai :deep(pre) {
+  background: #f5f5f5;
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.bubble.ai :deep(blockquote) {
+  border-left: 3px solid #1890ff;
+  padding-left: 12px;
+  margin: 8px 0;
+  color: #666;
+  font-style: italic;
+}
+
+@media (max-width: 991px) {
+  .chat-window { padding: 8px; }
+  .input-bar { flex: 0 0 56px; padding: 8px 12px; }
 }
 </style>

@@ -5,6 +5,27 @@ from .middleware.rate_limit import SimpleRateLimit
 import logging
 from datetime import date, datetime, timedelta
 import random
+import os
+
+# 配置日志级别
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # 输出到控制台
+    ]
+)
+
+# 设置特定模块的日志级别
+logging.getLogger("app.api.v1.work_reports").setLevel(logging.INFO)
+logging.getLogger("app.repository.work_report_repo").setLevel(logging.INFO)
+
+# 可选加载 .env（若已安装 python-dotenv）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 # 说明：FastAPI应用入口，注册路由与中间件
 

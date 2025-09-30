@@ -11,6 +11,6 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(orders.router, prefix="/api/orders", tags=["orders"])
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(work_reports.router, prefix="/api", tags=["work_reports"])
-    app.include_router(pricing.router, prefix="/api", tags=["pricing"])
+    app.include_router(pricing.router, prefix="/api/pricing", tags=["pricing"])
 
 

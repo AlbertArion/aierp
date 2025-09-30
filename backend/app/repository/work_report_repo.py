@@ -54,6 +54,22 @@ class WorkReportRepository:
                     keyword_param = f"%{keyword}%"
                     params.extend([keyword_param, keyword_param])
                 
+                # 员工姓名过滤（通过JOIN查询）
+                if employee_name:
+                    conditions.append("e.name LIKE ?")
+                    params.append(f"%{employee_name}%")
+                    logger.info(f"添加员工名过滤条件: e.name LIKE '%{employee_name}%'")
+                
+                # 项目名称过滤（通过JOIN查询）
+                if project_name:
+                    conditions.append("p.project_name LIKE ?")
+                    params.append(f"%{project_name}%")
+                
+                # 部门名称过滤（通过JOIN查询）
+                if department_name:
+                    conditions.append("d.department_name LIKE ?")
+                    params.append(f"%{department_name}%")
+                
                 # 精确匹配（只使用实际存在的字段）
                 if status:
                     conditions.append("status = ?")
@@ -70,9 +86,19 @@ class WorkReportRepository:
                 # 构建SQL查询
                 where_clause = " AND ".join(conditions) if conditions else "1=1"
                 
-                # 获取总数
-                count_sql = f"SELECT COUNT(*) FROM work_reports WHERE {where_clause}"
+                # 获取总数（需要JOIN来支持员工名查询）
+                count_sql = (
+                    "SELECT COUNT(*) FROM work_reports wr "
+                    "LEFT JOIN employees e ON wr.employee_id = e.id "
+                    "LEFT JOIN projects p ON wr.project_id = p.id "
+                    "LEFT JOIN departments d ON wr.department_id = d.id "
+                    f"WHERE {where_clause}"
+                )
+                logger.info("🔍 执行SQLite COUNT查询:")
+                logger.info(f"  📝 SQL: {count_sql}")
+                logger.info(f"  📊 参数: {params}")
                 total = self.work_reports.cursor.execute(count_sql, params).fetchone()[0]
+                logger.info(f"  ✅ 查询结果总数: {total}")
                 
                 # 获取分页数据（带JOIN补充姓名/项目/部门名称）
                 skip = (page - 1) * size
@@ -89,9 +115,17 @@ class WorkReportRepository:
                 )
                 params_with_pagination = params + [size, skip]
                 
+                logger.info("🔍 执行SQLite数据查询:")
+                logger.info(f"  📝 SQL: {data_sql}")
+                logger.info(f"  📊 参数: {params_with_pagination}")
+                
                 self.work_reports.cursor.execute(data_sql, params_with_pagination)
                 rows = self.work_reports.cursor.fetchall()
                 results = [dict(row) for row in rows]
+                
+                logger.info(f"  ✅ 查询到 {len(results)} 条记录")
+                if results:
+                    logger.info(f"  📋 前3条记录: {[{'id': r.get('id'), 'employee_name': r.get('employee_name'), 'report_date': r.get('report_date')} for r in results[:3]]}")
                 
             elif is_memory_db:
                 # 内存数据库 - 使用Python过滤

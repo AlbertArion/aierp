@@ -327,3 +327,55 @@ class PricingRepository:
         except Exception as e:
             logger.error(f"批量更新核价结果状态失败: {e}")
             return 0
+    
+    async def search_materials(
+        self, 
+        material_name: Optional[str] = None,
+        specification: Optional[str] = None,
+        keyword: Optional[str] = None,
+        limit: int = 20
+    ) -> List[MaterialData]:
+        """搜索物料数据"""
+        try:
+            query = {}
+            
+            # 构建查询条件
+            if material_name:
+                query["material_name"] = {"$regex": material_name, "$options": "i"}
+            
+            if specification:
+                query["specification"] = {"$regex": specification, "$options": "i"}
+            
+            if keyword:
+                # 关键词搜索：在物料名称、规格、工艺要求中搜索
+                query["$or"] = [
+                    {"material_name": {"$regex": keyword, "$options": "i"}},
+                    {"specification": {"$regex": keyword, "$options": "i"}},
+                    {"process_requirements": {"$regex": keyword, "$options": "i"}}
+                ]
+            
+            # 执行查询
+            if hasattr(self.materials_collection, 'find'):
+                # MongoDB
+                cursor = self.materials_collection.find(query).limit(limit)
+                materials = []
+                for doc in cursor:
+                    # 转换MongoDB文档为MaterialData对象
+                    doc["id"] = str(doc.get("_id", doc.get("id")))
+                    materials.append(MaterialData(**doc))
+                return materials
+            else:
+                # Memory数据库或SQLite
+                all_materials = self.materials_collection.find(query)
+                materials = []
+                count = 0
+                for doc in all_materials:
+                    if count >= limit:
+                        break
+                    materials.append(MaterialData(**doc))
+                    count += 1
+                return materials
+                
+        except Exception as e:
+            logger.error(f"搜索物料数据失败: {e}")
+            return []

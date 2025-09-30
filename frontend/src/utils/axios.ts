@@ -35,6 +35,10 @@ apiClient.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    // 添加缓存破坏参数
+    if (config.method === 'post') {
+      config.params = { ...config.params, _t: Date.now() }
+    }
     return config
   },
   (error) => {

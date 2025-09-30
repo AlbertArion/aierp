@@ -10,7 +10,7 @@
       <div v-for="(m, idx) in messages" :key="idx" class="msg" :class="m.role">
         <div v-if="m.role === 'user'" class="bubble user">{{ m.content }}</div>
         <div v-else class="bubble ai">
-          <div v-if="m.type === 'text'">{{ m.content }}</div>
+          <div v-if="m.type === 'text'" v-html="renderMarkdown(m.content)"></div>
           <div v-else-if="m.type === 'typing'" class="typing-animation">
             <span>{{ m.content }}</span>
             <span class="typing-dots">
@@ -98,17 +98,20 @@
 import { ref, reactive, nextTick } from 'vue'
 import apiClient from '../utils/axios'
 import { message } from 'ant-design-vue'
+import { marked } from 'marked'
 
 // 物料数据接口
 interface MaterialData {
   id: string
-  materialCode: string      // 物料编码
-  materialName: string      // 物料名称
+  material_code: string      // 物料编码
+  material_name: string      // 物料名称
   specification: string     // 规格型号
   quantity: number         // 数量
   unit: string            // 单位
   complexity: string      // 复杂度等级
-  processRequirements: string[] // 工艺要求
+  process_requirements: string // 工艺要求（字符串格式）
+  estimated_price?: number  // 预估价格
+  status?: string         // 状态
 }
 
 // 核价结果接口
@@ -135,18 +138,20 @@ const isProcessing = ref(false)
 const currentStep = ref(0)
 const processingMessage = ref('')
 const messages = reactive<Array<{ role: 'user' | 'ai', content: string, type?: 'text' | 'typing' | 'materials' | 'pricing_results', materials?: MaterialData[], results?: PricingResult[] }>>([
-  { role: 'ai', content: '你好，我是AI核价智能体。请告诉我你需要核价的物料信息。', type: 'text' }
+  { role: 'ai', content: '你好，我是 AI 核价智能体。请告诉我你需要核价的物料信息。', type: 'text' }
 ])
 
 // 表格列定义
 const materialColumns = [
-  { title: '物料编码', dataIndex: 'materialCode', key: 'materialCode', width: 120 },
-  { title: '物料名称', dataIndex: 'materialName', key: 'materialName', width: 150 },
+  { title: '物料编码', dataIndex: 'material_code', key: 'material_code', width: 120 },
+  { title: '物料名称', dataIndex: 'material_name', key: 'material_name', width: 150 },
   { title: '规格型号', dataIndex: 'specification', key: 'specification', width: 120 },
   { title: '数量', dataIndex: 'quantity', key: 'quantity', width: 80 },
   { title: '单位', dataIndex: 'unit', key: 'unit', width: 60 },
   { title: '复杂度', dataIndex: 'complexity', key: 'complexity', width: 80 },
-  { title: '工艺要求', dataIndex: 'processRequirements', key: 'processRequirements', width: 150 }
+  { title: '工艺要求', dataIndex: 'process_requirements', key: 'process_requirements', width: 150 },
+  { title: '预估价格', dataIndex: 'estimated_price', key: 'estimated_price', width: 100 },
+  { title: '状态', dataIndex: 'status', key: 'status', width: 100 }
 ]
 
 const pricingColumns = [
@@ -163,6 +168,16 @@ const pricingColumns = [
   { title: '操作', dataIndex: 'approve', key: 'approve', width: 100 }
 ]
 
+// Markdown渲染函数
+const renderMarkdown = (content: string): string => {
+  if (!content) return ''
+  const result = marked(content, {
+    breaks: true,
+    gfm: true
+  })
+  return typeof result === 'string' ? result : result.toString()
+}
+
 // 发送消息
 const onSend = async () => {
   const q = input.value.trim()
@@ -171,210 +186,53 @@ const onSend = async () => {
   messages.push({ role: 'user', content: q })
   input.value = ''
   loading.value = true
+  
+  // 移动端收起软键盘
+  if (window.innerWidth <= 991) {
+    const inputElement = document.querySelector('.ant-input') as HTMLInputElement
+    if (inputElement) {
+      inputElement.blur()
+    }
+  }
 
   try {
-    // 第一步：延迟1秒后显示AI回复消息
-    await sleep(500)
-    messages.push({
-      role: 'ai',
-      content: '好的，我来帮您查找这些物料并进行核价分析',
-      type: 'text'
-    })
+    // 显示AI思考中动画
+    const typingIndex = messages.length
+    messages.push({ role: 'ai', content: '正在思考', type: 'typing' })
     
-    // 第二步：延迟500ms后添加带三个点动画的消息
-    await sleep(500)
-    const typingMessageIndex = messages.length
-    messages.push({
-      role: 'ai',
-      content: '正在搜索物料数据',
-      type: 'typing'
-    })
+    // 调用后端AI查询接口
+    const { data } = await apiClient.post('/api/pricing/ai-query', { query: q })
     
-    // 等待1-5秒随机，显示三个点动画
-    await sleep(getRandomWaitTime())
-    
-    // 第三步：移除动画消息，添加搜索结果
-    messages.splice(typingMessageIndex, 1) // 移除动画消息
-    
-    // 解析用户查询，搜索相关物料
-    const searchResults = await searchMaterialsByQuery(q)
-
-    if (searchResults.length === 0) {
-      messages.push({
-        role: 'ai',
-        content: '未找到相关物料数据，请尝试其他关键词或检查物料名称。',
-        type: 'text'
-      })
+    if (data.success) {
+      // 移除思考中动画
+      messages.splice(typingIndex, 1)
+      
+      const explanation: string | undefined = data.data?.explanation
+      const rows: MaterialData[] = data.data?.rows || []
+      
+      if (explanation) {
+        messages.push({ role: 'ai', content: explanation, type: 'text' })
+      }
+      
+      if (rows.length > 0) {
+        messages.push({ role: 'ai', content: '', type: 'materials', materials: rows })
+      } else if (!explanation) {
+        messages.push({ role: 'ai', content: '未找到相关物料数据，请尝试其他关键词或检查物料名称。', type: 'text' })
+      }
     } else {
-      messages.push({
-        role: 'ai',
-        content: '',
-        type: 'materials',
-        materials: searchResults
-      })
+      messages.splice(typingIndex, 1)
+      message.error('查询失败')
     }
-  } catch (error) {
-    message.error('搜索失败，请稍后重试')
+  } catch (error: any) {
+    // 异常时也移除动画
+    const last = messages[messages.length - 1]
+    if (last?.type === 'typing') messages.pop()
+    message.error('查询失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     loading.value = false
   }
 }
 
-// 根据查询搜索物料
-const searchMaterialsByQuery = async (query: string): Promise<MaterialData[]> => {
-  // 模拟从后端搜索物料数据
-  const allMaterials = [
-    {
-      id: '1',
-      materialCode: 'SY001',
-      materialName: '纺机主轴',
-      specification: 'Φ50×200mm',
-      quantity: 100,
-      unit: '件',
-      complexity: '中等',
-      processRequirements: ['车削', '磨削', '热处理']
-    },
-    {
-      id: '2',
-      materialCode: 'SY002',
-      materialName: '纺机齿轮',
-      specification: '模数2.5',
-      quantity: 50,
-      unit: '件',
-      complexity: '复杂',
-      processRequirements: ['铣削', '滚齿', '淬火']
-    },
-    {
-      id: '3',
-      materialCode: 'SY003',
-      materialName: '纺机轴承座',
-      specification: '内径30mm',
-      quantity: 200,
-      unit: '件',
-      complexity: '简单',
-      processRequirements: ['车削', '钻孔']
-    },
-    {
-      id: '4',
-      materialCode: 'SY004',
-      materialName: '纺机联轴器',
-      specification: '弹性联轴器',
-      quantity: 80,
-      unit: '件',
-      complexity: '中等',
-      processRequirements: ['车削', '铣削', '装配']
-    },
-    {
-      id: '5',
-      materialCode: 'SY005',
-      materialName: '纺机皮带轮',
-      specification: 'Φ150mm',
-      quantity: 120,
-      unit: '件',
-      complexity: '简单',
-      processRequirements: ['车削', '滚齿']
-    },
-    {
-      id: '6',
-      materialCode: 'SY006',
-      materialName: '纺机导丝轮',
-      specification: 'Φ80×20mm',
-      quantity: 150,
-      unit: '件',
-      complexity: '简单',
-      processRequirements: ['车削', '抛光']
-    },
-    {
-      id: '7',
-      materialCode: 'SY007',
-      materialName: '纺机张力器',
-      specification: '弹簧张力器',
-      quantity: 60,
-      unit: '件',
-      complexity: '中等',
-      processRequirements: ['车削', '弹簧装配', '调校']
-    },
-    {
-      id: '8',
-      materialCode: 'SY008',
-      materialName: '纺机罗拉',
-      specification: 'Φ25×200mm',
-      quantity: 300,
-      unit: '件',
-      complexity: '中等',
-      processRequirements: ['车削', '表面处理', '动平衡']
-    },
-    {
-      id: '9',
-      materialCode: 'SY009',
-      materialName: '纺机锭子',
-      specification: '高速锭子',
-      quantity: 180,
-      unit: '件',
-      complexity: '复杂',
-      processRequirements: ['精密加工', '热处理', '动平衡', '装配']
-    },
-    {
-      id: '10',
-      materialCode: 'SY010',
-      materialName: '纺机钢领',
-      specification: 'Φ42mm',
-      quantity: 250,
-      unit: '件',
-      complexity: '中等',
-      processRequirements: ['车削', '磨削', '表面涂层']
-    },
-    {
-      id: '11',
-      materialCode: 'SY011',
-      materialName: '纺机锭脚',
-      specification: '铝合金锭脚',
-      quantity: 180,
-      unit: '件',
-      complexity: '简单',
-      processRequirements: ['压铸', '机加工', '表面处理']
-    },
-    {
-      id: '12',
-      materialCode: 'SY012',
-      materialName: '纺机锭翼',
-      specification: '铝合金锭翼',
-      quantity: 180,
-      unit: '件',
-      complexity: '复杂',
-      processRequirements: ['压铸', '精密加工', '动平衡', '表面处理']
-    }
-  ]
-
-  // 智能关键词匹配
-  const keywords = query.toLowerCase()
-
-  // 如果查询包含"纺机"相关词汇，返回所有纺机物料
-  if (keywords.includes('纺机') || keywords.includes('纺') || keywords.includes('机械') ||
-    keywords.includes('主轴') || keywords.includes('齿轮') || keywords.includes('轴承') ||
-    keywords.includes('联轴器') || keywords.includes('皮带轮') || keywords.includes('导丝轮') ||
-    keywords.includes('张力器') || keywords.includes('罗拉') || keywords.includes('锭子') ||
-    keywords.includes('钢领') || keywords.includes('锭脚') || keywords.includes('锭翼')) {
-    return allMaterials
-  }
-
-  // 如果查询包含特定物料编号，精确匹配这些物料
-  const materialCodes = ['sy005', 'sy006', 'sy009', 'sy010', 'sy012']
-  const hasSpecificCodes = materialCodes.some(code => keywords.includes(code))
-  
-  if (hasSpecificCodes) {
-    return allMaterials.filter(material => 
-      materialCodes.includes(material.materialCode.toLowerCase())
-    )
-  }
-
-  // 精确匹配
-  return allMaterials.filter(material =>
-    material.materialName.toLowerCase().includes(keywords) ||
-    material.materialCode.toLowerCase().includes(keywords) ||
-    material.specification.toLowerCase().includes(keywords)
-  )
-}
 
 // 开始核价处理
 const startPricingWithMaterials = async (materials: MaterialData[]) => {
@@ -413,13 +271,13 @@ const startPricingWithMaterials = async (materials: MaterialData[]) => {
 
     // 调用核价API，转换字段名称以匹配后端期望的格式
     const formattedMaterials = materials.map(material => ({
-      material_code: material.materialCode,
-      material_name: material.materialName,
+      material_code: material.material_code,
+      material_name: material.material_name,
       specification: material.specification,
       quantity: material.quantity,
       unit: material.unit,
       complexity: material.complexity,
-      process_requirements: material.processRequirements
+      process_requirements: material.process_requirements
     }))
 
     const { data } = await apiClient.post('/api/pricing/batch-calculate', {
@@ -685,11 +543,11 @@ const getRecommendationClass = (recommendation: string) => {
 }
 
 .processing-display {
-  flex: 0 0 120px; /* 固定高度120px */
-  padding: 16px;
+  flex: 0 0 112px; /* 稍微减小 */
+  padding: 12px;
   background: #f8f9fa;
   border-radius: 8px;
-  margin: 16px 0;
+  margin: 12px 0;
 }
 
 .processing-message {
@@ -702,11 +560,11 @@ const getRecommendationClass = (recommendation: string) => {
 }
 
 .input-bar {
-  flex: 0 0 80px; /* 固定高度80px */
+  flex: 0 0 64px; /* 更紧凑 */
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 16px 24px;
+  padding: 12px 16px;
   background: white;
   border-top: 1px solid #f0f0f0;
 }
@@ -806,7 +664,7 @@ const getRecommendationClass = (recommendation: string) => {
 /* 响应式设计 */
 @media (max-width: 1200px) {
   .pricing-agent-page {
-    padding: 8px;
+    padding: 6px;
   }
 
   .agent-info {
@@ -820,6 +678,13 @@ const getRecommendationClass = (recommendation: string) => {
     align-items: flex-start;
     gap: 12px;
   }
+}
+
+/* 对齐报工智能体的移动端边距与高度策略 */
+@media (max-width: 991px) {
+  .chat-header { padding: 12px; }
+  .chat-window { padding: 8px 12px; }
+  .input-bar { flex: 0 0 56px; padding: 8px 12px; }
 }
 
 /* 动画效果 */
@@ -874,5 +739,67 @@ const getRecommendationClass = (recommendation: string) => {
 
 .chat-window::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8;
+}
+
+/* Markdown样式 */
+.bubble.ai :deep(h1),
+.bubble.ai :deep(h2),
+.bubble.ai :deep(h3),
+.bubble.ai :deep(h4),
+.bubble.ai :deep(h5),
+.bubble.ai :deep(h6) {
+  margin: 8px 0 4px 0;
+  font-weight: 600;
+  color: #333;
+}
+
+.bubble.ai :deep(p) {
+  margin: 4px 0;
+  line-height: 1.6;
+}
+
+.bubble.ai :deep(ul),
+.bubble.ai :deep(ol) {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.bubble.ai :deep(li) {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+
+.bubble.ai :deep(strong) {
+  font-weight: 600;
+  color: #1890ff;
+}
+
+.bubble.ai :deep(em) {
+  font-style: italic;
+  color: #666;
+}
+
+.bubble.ai :deep(code) {
+  background: #f5f5f5;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.bubble.ai :deep(pre) {
+  background: #f5f5f5;
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.bubble.ai :deep(blockquote) {
+  border-left: 3px solid #1890ff;
+  padding-left: 12px;
+  margin: 8px 0;
+  color: #666;
+  font-style: italic;
 }
 </style>

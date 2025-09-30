@@ -29,55 +29,118 @@ else
     echo "⚠️  未找到虚拟环境，使用系统Python"
 fi
 
-# 强制升级pip、setuptools和wheel
-echo "🔧 强制升级构建工具..."
-python3 -m pip install --upgrade --force-reinstall pip setuptools wheel
+# 检查并升级构建工具（仅在需要时）
+echo "🔧 检查构建工具版本..."
+pip install --upgrade pip setuptools wheel
 
-# 清理pip缓存
-echo "🧹 清理pip缓存..."
-pip cache purge
+# 检查并安装依赖（智能安装，避免重复下载）
+echo "📥 检查依赖状态..."
 
-# 分步安装依赖，避免构建问题
-echo "📥 分步安装依赖..."
+# 检查关键依赖是否已安装
+check_dependency() {
+    python3 -c "import $1" 2>/dev/null
+    return $?
+}
 
-# 1. 安装基础构建工具
-echo "📦 安装基础构建工具..."
-pip install --no-cache-dir setuptools wheel pip
-
-# 2. 安装基础依赖
-echo "📦 安装基础依赖..."
-pip install --no-cache-dir fastapi==0.112.2
-pip install --no-cache-dir uvicorn[standard]==0.30.6
-pip install --no-cache-dir pydantic==2.9.2
-pip install --no-cache-dir python-multipart==0.0.9
-
-# 3. 安装数据处理依赖
-    echo "📦 安装数据处理依赖..."
-    pip install --no-cache-dir "pandas>=2.0.0,<2.1.0"
-    pip install --no-cache-dir "numpy>=1.24.0,<2.0.0"
-
-# 4. 安装机器学习依赖
-echo "📦 安装机器学习依赖..."
-pip install --no-cache-dir scikit-learn==1.3.2
-
-# 5. 尝试安装statsmodels（可能失败）
-    echo "📦 尝试安装statsmodels..."
-    if pip install --no-cache-dir "statsmodels>=0.14.0"; then
-    echo "✅ statsmodels安装成功"
-    STATSMODELS_OK=true
+# 检查requirements.txt是否存在，如果存在则使用它
+if [ -f "requirements.txt" ]; then
+    echo "📦 使用requirements.txt安装依赖..."
+    pip install -r requirements.txt
 else
-    echo "⚠️  statsmodels安装失败，将使用简化预测方法"
-    STATSMODELS_OK=false
+    echo "📦 分步安装依赖..."
+    
+    # 1. 安装基础构建工具
+    echo "📦 安装基础构建工具..."
+    pip install setuptools wheel pip
+    
+    # 2. 安装基础依赖（条件安装）
+    echo "📦 检查基础依赖..."
+    if ! check_dependency fastapi; then
+        echo "📦 安装fastapi..."
+        pip install fastapi==0.112.2
+    else
+        echo "✅ fastapi已安装"
+    fi
+    
+    if ! check_dependency uvicorn; then
+        echo "📦 安装uvicorn..."
+        pip install uvicorn[standard]==0.30.6
+    else
+        echo "✅ uvicorn已安装"
+    fi
+    
+    if ! check_dependency pydantic; then
+        echo "📦 安装pydantic..."
+        pip install pydantic==2.9.2
+    else
+        echo "✅ pydantic已安装"
+    fi
+    
+    if ! check_dependency multipart; then
+        echo "📦 安装python-multipart..."
+        pip install python-multipart==0.0.9
+    else
+        echo "✅ python-multipart已安装"
+    fi
+    
+    # 3. 安装数据处理依赖（条件安装）
+    echo "📦 检查数据处理依赖..."
+    if ! check_dependency pandas; then
+        echo "📦 安装pandas..."
+        pip install "pandas>=2.0.0,<2.1.0"
+    else
+        echo "✅ pandas已安装"
+    fi
+    
+    if ! check_dependency numpy; then
+        echo "📦 安装numpy..."
+        pip install "numpy>=1.24.0,<2.0.0"
+    else
+        echo "✅ numpy已安装"
+    fi
+    
+    # 4. 安装机器学习依赖（条件安装）
+    echo "📦 检查机器学习依赖..."
+    if ! check_dependency sklearn; then
+        echo "📦 安装scikit-learn..."
+        pip install scikit-learn==1.3.2
+    else
+        echo "✅ scikit-learn已安装"
+    fi
+    
+    # 5. 尝试安装statsmodels（可能失败）
+    if ! check_dependency statsmodels; then
+        echo "📦 尝试安装statsmodels..."
+        if pip install "statsmodels>=0.14.0"; then
+            echo "✅ statsmodels安装成功"
+            STATSMODELS_OK=true
+        else
+            echo "⚠️  statsmodels安装失败，将使用简化预测方法"
+            STATSMODELS_OK=false
+        fi
+    else
+        echo "✅ statsmodels已安装"
+        STATSMODELS_OK=true
+    fi
+    
+    # 6. 安装其他依赖（条件安装）
+    echo "📦 检查其他依赖..."
+    for pkg in pymongo snowflake_connector requests pdfplumber openpyxl pymysql; do
+        if ! check_dependency $pkg; then
+            case $pkg in
+                pymongo) pip install pymongo==4.8.0 ;;
+                snowflake_connector) pip install snowflake-connector-python==3.11.0 ;;
+                requests) pip install requests==2.32.3 ;;
+                pdfplumber) pip install pdfplumber==0.11.4 ;;
+                openpyxl) pip install openpyxl==3.1.5 ;;
+                pymysql) pip install PyMySQL==1.1.1 ;;
+            esac
+            echo "✅ $pkg 安装完成"
+        else
+            echo "✅ $pkg 已安装"
+        fi
+    done
 fi
-
-# 6. 安装其他依赖
-    echo "📦 安装其他依赖..."
-    pip install --no-cache-dir pymongo==4.8.0
-    pip install --no-cache-dir snowflake-connector-python==3.11.0
-    pip install --no-cache-dir requests==2.32.3
-    pip install --no-cache-dir pdfplumber==0.11.4
-    pip install --no-cache-dir openpyxl==3.1.5
-    pip install --no-cache-dir PyMySQL==1.1.1
     # jpype1已移除：Drools引擎使用模拟实现，无需Java桥接
 
 # 验证关键模块导入

@@ -12,57 +12,65 @@
       </div>
     </a-layout-header>
     <a-layout class="app-main">
-      <a-layout-sider :collapsed="collapsed" :collapsible="true" :trigger="null" width="200" class="app-sider">
-        <div class="sider-trigger" @click="collapsed = !collapsed">
+      <a-layout-sider
+        :collapsed="collapsedEffective"
+        :collapsedWidth="56"
+        :breakpoint="'lg'"
+        :collapsible="true"
+        :trigger="null"
+        width="200"
+        class="app-sider"
+      >
+        <div class="sider-trigger" v-show="!isMobile" @click="toggleCollapsed">
           <a-button type="text" size="small">
             <template #icon>
-              <LeftOutlined v-if="!collapsed" />
+              <LeftOutlined v-if="!collapsedEffective" />
               <RightOutlined v-else />
             </template>
           </a-button>
         </div>
         <a-menu theme="dark" mode="inline" class="app-menu">
-          <a-menu-item key="1" @click="go('/integration')">
+          <a-menu-item key="1" v-if="!isMobile" @click="go('/integration')">
             <template #icon>
               <DatabaseOutlined />
             </template>
-            <span v-if="!collapsed">{{ t('menu.integration') }}</span>
+            <span v-if="!collapsedEffective">{{ t('menu.integration') }}</span>
           </a-menu-item>
-          <a-menu-item key="2" @click="go('/predict')">
+          <a-menu-item key="2" v-if="!isMobile" @click="go('/predict')">
             <template #icon>
               <BarChartOutlined />
             </template>
-            <span v-if="!collapsed">{{ t('menu.predict') }}</span>
+            <span v-if="!collapsedEffective">{{ t('menu.predict') }}</span>
           </a-menu-item>
-          <a-menu-item key="3" @click="go('/orders')">
+          <a-menu-item key="3" v-if="!isMobile" @click="go('/orders')">
             <template #icon>
               <ShoppingCartOutlined />
             </template>
-            <span v-if="!collapsed">{{ t('menu.orders') }}</span>
+            <span v-if="!collapsedEffective">{{ t('menu.orders') }}</span>
           </a-menu-item>
-          <a-menu-item key="4" @click="go('/rules')">
+          <a-menu-item key="4" v-if="!isMobile" @click="go('/rules')">
             <template #icon>
               <SettingOutlined />
             </template>
-            <span v-if="!collapsed">{{ t('menu.rules') }}</span>
+            <span v-if="!collapsedEffective">{{ t('menu.rules') }}</span>
           </a-menu-item>
-          <a-menu-item key="5" @click="go('/work-report-agent')">
+          <a-menu-item key="5" v-if="!isMobile" @click="go('/work-report-preview')">
             <template #icon>
               <RobotOutlined />
             </template>
-            <span v-if="!collapsed">报工智能体</span>
+            <span v-if="!collapsedEffective">报工查询</span>
           </a-menu-item>
-          <a-menu-item key="6" @click="go('/work-report-chat')">
+          <a-menu-item key="6" @click="go('/work-report-agent')">
             <template #icon>
               <MessageOutlined />
             </template>
-            <span v-if="!collapsed">报工对话查询</span>
+            <span v-if="!collapsedEffective">报工智能体</span>
           </a-menu-item>
           <a-menu-item key="7" @click="go('/pricing-agent')">
             <template #icon>
               <RobotOutlined />
             </template>
-            <span v-if="!collapsed">核价智能体</span>
+            <span v-if="!collapsedEffective">核价智能体</span>
           </a-menu-item>
         </a-menu>
       </a-layout-sider>
@@ -89,6 +97,15 @@ const { t } = useI18n()
 
 const backendOk = ref<boolean | null>(null)
 const collapsed = ref(false)
+// 移动端（小屏）自动折叠，仅保留图标
+const collapsedEffective = ref(false)
+const isMobile = ref(false)
+const toggleCollapsed = () => {
+  // 仅桌面端可手动切换
+  if (!isMobile.value) collapsed.value = !collapsed.value
+  // 同步生效态
+  collapsedEffective.value = isMobile.value || collapsed.value
+}
 const dark = ref(false)
 
 const applyTheme = (isDark: boolean) => {
@@ -110,6 +127,13 @@ onMounted(async () => {
   }
   // 初始化主题
   applyTheme(dark.value)
+  // 根据屏幕宽度设置折叠（小于 992px 认为是移动端）
+  const updateByWidth = () => {
+    isMobile.value = window.innerWidth < 992
+    collapsedEffective.value = isMobile.value || collapsed.value
+  }
+  updateByWidth()
+  window.addEventListener('resize', updateByWidth)
 })
 </script>
 
@@ -406,6 +430,25 @@ onMounted(async () => {
   position: relative;
 }
 
+/* 移动端头部右侧元素紧凑布局 */
+@media (max-width: 991px) {
+  .header-right {
+    gap: 8px;
+    margin-left: auto;
+  }
+  
+  .header-right .ant-switch {
+    transform: scale(0.9);
+  }
+  
+  .header-right .ant-tag {
+    font-size: 12px;
+    padding: 2px 8px;
+    height: auto;
+    line-height: 1.2;
+  }
+}
+
 .app-main { 
   flex: 1; 
   display: flex; 
@@ -432,6 +475,14 @@ onMounted(async () => {
   margin-right: 8px;
 }
 
+/* 小屏：仅保留图标，给右侧更多空间 */
+@media (max-width: 991px) {
+  .app-content { padding: 12px; }
+  .app-sider { box-shadow: none; }
+  .app-menu :deep(.ant-menu-item) { justify-content: center; }
+  .app-menu :deep(.ant-menu-item-icon) { margin-right: 0; }
+}
+
 .app-content { 
   flex: 1;
   padding:24px; 
@@ -441,6 +492,12 @@ onMounted(async () => {
   height: 100%;
 }
 .page-container { max-width:1200px; margin:0 auto; }
+
+/* 移动端：内容区域顶满，去掉大边距与最大宽度限制 */
+@media (max-width: 991px) {
+  .app-content { padding: 8px; }
+  .page-container { max-width: 100%; margin: 0; }
+}
 
 .app-footer { 
   text-align:center; 
@@ -456,7 +513,7 @@ onMounted(async () => {
 .sider-trigger {
   position: absolute;
   top: 50%;
-  right: 8px;
+  right: 16px;
   transform: translateY(-50%);
   z-index: 10;
 }

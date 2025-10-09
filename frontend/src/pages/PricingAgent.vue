@@ -64,6 +64,35 @@
               </template>
             </a-table>
           </div>
+          <!-- 批量核价聊天气泡：内置上传/预览/执行/导出/审批 -->
+          <div v-else-if="m.type === 'batch'" class="batch-display">
+            <div class="results-header">
+              <h4>🗂 批量核价助手</h4>
+            </div>
+            <a-space direction="vertical" style="width: 100%">
+              <a-upload :show-upload-list="false" :before-upload="() => false" @change="onBatchFileChange">
+                <a-button type="primary">选择Excel文件（.xlsx）</a-button>
+              </a-upload>
+              <div v-if="batchFileName">已选择：{{ batchFileName }}</div>
+              <a-space>
+                <a-button type="primary" :disabled="!batchFile" @click="batchUpload">上传并预览</a-button>
+                <a-button :disabled="!batchTraceId" @click="batchRun">执行核价</a-button>
+                <a-button :disabled="!batchTraceId" @click="batchRefresh">刷新结果</a-button>
+                <a-button :disabled="!batchTraceId" @click="batchExport">导出CSV</a-button>
+                <a-button :disabled="!batchTraceId" @click="batchApprove">提交领导确认</a-button>
+              </a-space>
+
+              <a-alert v-if="batchTraceId" type="success" show-icon>
+                <template #message>
+                  任务 TraceID: <code>{{ batchTraceId }}</code>，共 {{ batchTotalRows }} 行
+                </template>
+              </a-alert>
+
+              <a-table v-if="batchPreviewRows.length" :data-source="batchPreviewRows" :columns="batchPreviewColumns" :pagination="false" size="small" />
+
+              <a-table v-if="batchResults.rows.length" :data-source="batchResults.rows" :columns="batchResultColumns" :pagination="{ current: batchPage, pageSize: batchPageSize, total: batchResults.total, onChange: onBatchPage }" row-key="id" size="small" />
+            </a-space>
+          </div>
         </div>
       </div>
     </div>
@@ -137,7 +166,7 @@ const loading = ref(false)
 const isProcessing = ref(false)
 const currentStep = ref(0)
 const processingMessage = ref('')
-const messages = reactive<Array<{ role: 'user' | 'ai', content: string, type?: 'text' | 'typing' | 'materials' | 'pricing_results', materials?: MaterialData[], results?: PricingResult[] }>>([
+const messages = reactive<Array<{ role: 'user' | 'ai', content: string, type?: 'text' | 'typing' | 'materials' | 'pricing_results' | 'batch', materials?: MaterialData[], results?: PricingResult[] }>>([
   { role: 'ai', content: '你好，我是 AI 核价智能体。请告诉我你需要核价的物料信息。', type: 'text' }
 ])
 
@@ -196,6 +225,17 @@ const onSend = async () => {
   }
 
   try {
+    // 若识别到“批量核价”意图，进入批量流程气泡
+    if (/批量|批量核价|excel|xlsx|导入|上传/.test(q)) {
+      const typingIndex = messages.length
+      messages.push({ role: 'ai', content: '正在准备批量核价流程', type: 'typing' })
+      await sleep(400)
+      messages.splice(typingIndex, 1)
+      messages.push({ role: 'ai', content: '请上传Excel文件开始批量核价。', type: 'batch' })
+      await nextTick(); scrollToBottom()
+      return
+    }
+
     // 显示AI思考中动画
     const typingIndex = messages.length
     messages.push({ role: 'ai', content: '正在思考', type: 'typing' })
@@ -404,6 +444,85 @@ const getStatusColor = (status: string) => {
   const colors: { [key: string]: string } = { pending: 'orange', approved: 'green', rejected: 'red' }
   return colors[status] || 'default'
 }
+
+// ========= 批量核价（聊天内） =========
+const batchFile = ref<File | null>(null)
+const batchFileName = ref('')
+const batchTraceId = ref('')
+const batchTotalRows = ref(0)
+const batchPreviewRows = ref<any[]>([])
+const batchPreviewColumns = ref<any[]>([])
+const batchResults = ref<{ total: number; rows: any[] }>({ total: 0, rows: [] })
+const batchPage = ref(1)
+const batchPageSize = ref(10)
+
+function onBatchFileChange(info: any) {
+  const f = info.file?.originFileObj as File
+  if (f) {
+    batchFile.value = f
+    batchFileName.value = f.name
+  }
+}
+
+async function batchUpload() {
+  if (!batchFile.value) return
+  const form = new FormData()
+  form.append('file', batchFile.value)
+  form.append('task_name', '批量核价')
+  const { data } = await apiClient.post('/api/pricing/batch/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+  batchTraceId.value = data.trace_id
+  batchTotalRows.value = data.total_rows
+  batchPreviewRows.value = data.preview_rows
+  batchPreviewColumns.value = Object.keys(batchPreviewRows.value[0] || {}).map(k => ({ title: k, dataIndex: k }))
+}
+
+async function batchRun() {
+  if (!batchTraceId.value) return
+  await apiClient.post(`/api/pricing/batch/${batchTraceId.value}/run`)
+  await batchRefresh()
+}
+
+async function batchRefresh() {
+  if (!batchTraceId.value) return
+  const { data } = await apiClient.get(`/api/pricing/batch/${batchTraceId.value}/results`, { params: { status: 'all', pn: batchPage.value, ps: batchPageSize.value } })
+  batchResults.value = data
+}
+
+function onBatchPage(p: number, ps: number) {
+  batchPage.value = p
+  batchPageSize.value = ps
+  batchRefresh()
+}
+
+async function batchExport() {
+  if (!batchTraceId.value) return
+  const res = await fetch(`/api/pricing/batch/${batchTraceId.value}/export?format=csv`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${batchTraceId.value}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function batchApprove() {
+  if (!batchTraceId.value) return
+  await apiClient.post(`/api/pricing/batch/${batchTraceId.value}/approve`, { approve: true })
+}
+
+const batchResultColumns = [
+  { title: '物料编码', dataIndex: 'material_code', key: 'material_code', width: 120 },
+  { title: '物料名称', dataIndex: 'material_name', key: 'material_name', width: 150 },
+  { title: '规格型号', dataIndex: 'specification', key: 'specification', width: 120 },
+  { title: '数量', dataIndex: 'quantity', key: 'quantity', width: 80 },
+  { title: '单位', dataIndex: 'uom', key: 'uom', width: 60 },
+  { title: '核算价(元)', dataIndex: 'estimated_price', key: 'estimated_price', width: 120 },
+  { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
+  { title: '备注', dataIndex: 'reason_or_notes', key: 'reason_or_notes', width: 200 }
+]
 
 const getStatusText = (status: string) => {
   const texts: { [key: string]: string } = { pending: '待确认', approved: '已确认', rejected: '已拒绝' }

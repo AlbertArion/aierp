@@ -72,6 +72,12 @@
             </template>
             <span v-if="!collapsedEffective">核价智能体</span>
           </a-menu-item>
+          <a-menu-item key="8" v-if="!isMobile" @click="go('/pricing-batch')">
+            <template #icon>
+              <RobotOutlined />
+            </template>
+            <span v-if="!collapsedEffective">批量核价</span>
+          </a-menu-item>
         </a-menu>
       </a-layout-sider>
       <a-layout-content class="app-content">

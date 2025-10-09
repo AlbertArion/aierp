@@ -21,10 +21,7 @@ const getApiBaseUrl = () => {
 // 创建axios实例
 const apiClient = axios.create({
   baseURL: getApiBaseUrl(),
-  timeout: 30000, // 增加超时时间到30秒
-  headers: {
-    'Content-Type': 'application/json'
-  }
+  timeout: 30000 // 增加超时时间到30秒
 })
 
 // 请求拦截器
@@ -34,6 +31,12 @@ apiClient.interceptors.request.use(
     const token = localStorage.getItem('token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
+    }
+    // FormData 上传：移除默认 Content-Type，让浏览器自动设置 multipart 边界
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      if (config.headers) {
+        delete (config.headers as any)['Content-Type']
+      }
     }
     // 添加缓存破坏参数
     if (config.method === 'post') {

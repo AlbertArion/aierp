@@ -118,7 +118,56 @@ class SQLiteDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_work_reports_date ON work_reports(report_date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_work_reports_status ON work_reports(status)')
         
+        # 批量核价：任务表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pricing_batch_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id TEXT UNIQUE NOT NULL,
+                task_name TEXT,
+                source_file_name TEXT,
+                total_rows INTEGER DEFAULT 0,
+                normalized_columns TEXT,
+                status TEXT DEFAULT 'uploaded',
+                stats_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP,
+                approver TEXT
+            )
+        ''')
+
+        # 批量核价：结果表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pricing_batch_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id TEXT NOT NULL,
+                row_index INTEGER,
+                material_code TEXT,
+                material_name TEXT,
+                specification TEXT,
+                process_requirements TEXT,
+                quantity REAL,
+                uom TEXT,
+                estimated_price REAL,
+                currency TEXT,
+                status TEXT,
+                reason_or_notes TEXT,
+                rule_version TEXT,
+                extra_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_pricing_batch_results_trace ON pricing_batch_results(trace_id)')
+
         self.conn.commit()
+
+        # 兼容新增列：为任务表补充文件路径列
+        try:
+            self._ensure_column_exists('pricing_batch_tasks', 'source_file_path', 'TEXT')
+        except Exception:
+            pass
 
         # 兼容旧库：若缺列则动态补齐
         self._ensure_column_exists('employees', 'status', 'TEXT')

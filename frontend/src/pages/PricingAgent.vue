@@ -3,6 +3,11 @@
     <!-- 标题区域 -->
     <div class="chat-header">
       <h3>💬 AI 核价智能体</h3>
+      <div class="header-actions">
+        <a-button type="primary" @click="goToBatchPricing" class="batch-pricing-btn">
+          📊 批量核价
+        </a-button>
+      </div>
     </div>
 
     <!-- 聊天内容区域 -->
@@ -196,6 +201,11 @@ const pricingColumns = [
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
   { title: '操作', dataIndex: 'approve', key: 'approve', width: 100 }
 ]
+
+// 导航到批量核价页面
+const goToBatchPricing = () => {
+  window.location.href = '/pricing-batch'
+}
 
 // Markdown渲染函数
 const renderMarkdown = (content: string): string => {
@@ -576,6 +586,7 @@ const getRecommendationClass = (recommendation: string) => {
   background: #fafafa;
   display: flex;
   align-items: center;
+  justify-content: space-between;
 }
 
 .chat-header h3 {
@@ -583,6 +594,19 @@ const getRecommendationClass = (recommendation: string) => {
   color: #333;
   font-size: 16px;
   font-weight: 600;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.batch-pricing-btn {
+  height: 32px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .chat-window {

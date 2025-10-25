@@ -18,7 +18,8 @@ const routes: RouteRecordRaw[] = [
         { path: '/work-report-preview', component: () => import('../pages/WorkReportPreview.vue'), meta: { requiresAuth: true, role: 'admin' } },
         { path: '/work-report-agent', component: () => import('../pages/WorkReportAgent.vue'), meta: { requiresAuth: true, role: 'admin' } },
         { path: '/pricing-agent', component: () => import('../pages/PricingAgent.vue'), meta: { requiresAuth: true, role: 'admin' } },
-        { path: '/pricing-batch', component: () => import('../pages/PricingBatch.vue'), meta: { requiresAuth: true, role: 'admin' } }
+        { path: '/pricing-batch', component: () => import('../pages/PricingBatch.vue'), meta: { requiresAuth: true, role: 'admin' } },
+        { path: '/yto-agent', component: () => import('../pages/YTOAgent.vue') }
 ]
 
 const router = createRouter({

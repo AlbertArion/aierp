@@ -12,22 +12,20 @@
       </div>
     </a-layout-header>
     <a-layout class="app-main">
-      <a-layout-sider
-        :collapsed="collapsedEffective"
-        :collapsedWidth="56"
-        :breakpoint="'lg'"
-        :collapsible="true"
-        :trigger="null"
-        width="200"
-        class="app-sider"
-      >
-        <div class="sider-trigger" v-show="!isMobile" @click="toggleCollapsed">
-          <a-button type="text" size="small">
-            <template #icon>
-              <LeftOutlined v-if="!collapsedEffective" />
-              <RightOutlined v-else />
-            </template>
-          </a-button>
+      <a-layout-sider :collapsed="collapsedEffective" :collapsedWidth="56" :breakpoint="'lg'" :collapsible="true"
+        :trigger="null" width="200" class="app-sider">
+        <div class="sider-header" v-show="!isMobile || collapsedEffective">
+          <div class="header-content">
+            <div class="header-title" v-if="!collapsedEffective">AI ERP</div>
+            <div class="sider-trigger" @click="toggleCollapsed">
+              <a-button type="text" size="small" class="collapse-btn">
+                <template #icon>
+                  <MenuOutlined v-if="!collapsedEffective" />
+                  <MenuUnfoldOutlined v-else />
+                </template>
+              </a-button>
+            </div>
+          </div>
         </div>
         <a-menu theme="dark" mode="inline" class="app-menu">
           <a-menu-item key="1" v-if="!isMobile" @click="go('/integration')">
@@ -72,11 +70,11 @@
             </template>
             <span v-if="!collapsedEffective">核价智能体</span>
           </a-menu-item>
-          <a-menu-item key="8" v-if="!isMobile" @click="go('/pricing-batch')">
+          <a-menu-item key="9" @click="go('/yto-agent')">
             <template #icon>
               <RobotOutlined />
             </template>
-            <span v-if="!collapsedEffective">批量核价</span>
+            <span v-if="!collapsedEffective">报价智能体</span>
           </a-menu-item>
         </a-menu>
       </a-layout-sider>
@@ -88,7 +86,7 @@
     </a-layout>
     <a-layout-footer class="app-footer">©Sinocst 2025 AI ERP</a-layout-footer>
   </a-layout>
-  
+
 </template>
 
 <script setup lang="ts">
@@ -96,7 +94,7 @@ import * as VueRouter from 'vue-router'
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import apiClient from './utils/axios'
-import { LeftOutlined, RightOutlined, DatabaseOutlined, BarChartOutlined, ShoppingCartOutlined, SettingOutlined, RobotOutlined, MessageOutlined } from '@ant-design/icons-vue'
+import { LeftOutlined, RightOutlined, DatabaseOutlined, BarChartOutlined, ShoppingCartOutlined, SettingOutlined, RobotOutlined, MessageOutlined, MenuOutlined, MenuUnfoldOutlined } from '@ant-design/icons-vue'
 const router = (VueRouter as any).useRouter()
 const go = (path: string) => router.push(path)
 const { t } = useI18n()
@@ -309,7 +307,7 @@ onMounted(async () => {
   color: var(--text-color) !important;
 }
 
-[data-theme="dark"] .ant-form-item-label > label {
+[data-theme="dark"] .ant-form-item-label>label {
   color: #e2e8f0 !important;
   font-weight: 500 !important;
   font-size: 14px !important;
@@ -349,24 +347,24 @@ onMounted(async () => {
   color: #e2e8f0 !important;
 }
 
-[data-theme="dark"] .ant-table-thead > tr > th {
+[data-theme="dark"] .ant-table-thead>tr>th {
   background: rgba(255, 255, 255, 0.05) !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
   color: #e2e8f0 !important;
   font-weight: 600 !important;
 }
 
-[data-theme="dark"] .ant-table-tbody > tr > td {
+[data-theme="dark"] .ant-table-tbody>tr>td {
   background: transparent !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
   color: #cbd5e1 !important;
 }
 
-[data-theme="dark"] .ant-table-tbody > tr:hover > td {
+[data-theme="dark"] .ant-table-tbody>tr:hover>td {
   background: rgba(22, 119, 255, 0.1) !important;
 }
 
-[data-theme="dark"] .ant-table-tbody > tr.ant-table-row-selected > td {
+[data-theme="dark"] .ant-table-tbody>tr.ant-table-row-selected>td {
   background: rgba(22, 119, 255, 0.15) !important;
 }
 
@@ -408,30 +406,45 @@ onMounted(async () => {
 </style>
 
 <style scoped>
-
-.app-layout { 
-  height: 100vh; 
-  display: flex; 
-  flex-direction: column; 
+.app-layout {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
-.app-header { 
-  display:flex; 
-  align-items:center; 
-  justify-content:space-between; 
-  background: var(--header-bg); 
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--header-bg);
   height: 64px;
   flex-shrink: 0;
-  padding: 0 24px;
+  padding: 0 10px;
 }
-.brand { display:flex; align-items:center; gap:10px; }
-.brand-logo { width:48px; height:48px; object-fit:contain; }
-.brand-name { color: var(--brand-name-color); font-weight:700; letter-spacing:.5px; }
 
-.header-right { 
-  display: flex; 
-  align-items: center; 
-  gap: 16px; 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  width: 80px;
+  object-fit: contain;
+}
+
+.brand-name {
+  color: var(--brand-name-color);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: .5px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   z-index: 1000;
   position: relative;
 }
@@ -442,11 +455,11 @@ onMounted(async () => {
     gap: 8px;
     margin-left: auto;
   }
-  
+
   .header-right .ant-switch {
     transform: scale(0.9);
   }
-  
+
   .header-right .ant-tag {
     font-size: 12px;
     padding: 2px 8px;
@@ -455,11 +468,12 @@ onMounted(async () => {
   }
 }
 
-.app-main { 
-  flex: 1; 
-  display: flex; 
+.app-main {
+  flex: 1;
+  display: flex;
   overflow: hidden;
 }
+
 .app-sider {
   flex-shrink: 0;
   height: 100%;
@@ -467,15 +481,18 @@ onMounted(async () => {
   box-shadow: 2px 0 8px var(--sider-shadow);
   z-index: 9;
 }
-.app-menu :deep(.ant-menu-item) { 
-  margin:4px 8px; 
-  border-radius:6px; 
+
+.app-menu :deep(.ant-menu-item) {
+  margin: 4px 8px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
 }
-.app-menu :deep(.ant-menu-item-selected) { 
-  background: var(--menu-selected-bg); 
+
+.app-menu :deep(.ant-menu-item-selected) {
+  background: var(--menu-selected-bg);
 }
+
 .app-menu :deep(.ant-menu-item-icon) {
   font-size: 16px;
   margin-right: 8px;
@@ -483,44 +500,87 @@ onMounted(async () => {
 
 /* 小屏：仅保留图标，给右侧更多空间 */
 @media (max-width: 991px) {
-  .app-content { padding: 12px; }
-  .app-sider { box-shadow: none; }
-  .app-menu :deep(.ant-menu-item) { justify-content: center; }
-  .app-menu :deep(.ant-menu-item-icon) { margin-right: 0; }
+  .app-content {
+    padding: 12px;
+  }
+
+  .app-sider {
+    box-shadow: none;
+  }
+
+  .app-menu :deep(.ant-menu-item) {
+    justify-content: center;
+  }
+
+  .app-menu :deep(.ant-menu-item-icon) {
+    margin-right: 0;
+  }
 }
 
-.app-content { 
+.app-content {
   flex: 1;
-  padding:24px; 
-  background: var(--content-bg); 
+  padding: 24px;
+  background: var(--content-bg);
   color: var(--text-color);
   overflow-y: auto;
   height: 100%;
 }
-.page-container { max-width:1200px; margin:0 auto; }
+
+.page-container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
 
 /* 移动端：内容区域顶满，去掉大边距与最大宽度限制 */
 @media (max-width: 991px) {
-  .app-content { padding: 8px; }
-  .page-container { max-width: 100%; margin: 0; }
+  .app-content {
+    padding: 8px;
+  }
+
+  .page-container {
+    max-width: 100%;
+    margin: 0;
+  }
 }
 
-.app-footer { 
-  text-align:center; 
-  background: #0b2540; /* 始终与顶部保持一致的深蓝色 */
-  border-top: 1px solid rgba(255, 255, 255, 0.1); /* 始终使用浅色边框 */
-  color: #fff; /* 始终使用白色文字 */
+.app-footer {
+  text-align: center;
+  background: #0b2540;
+  /* 始终与顶部保持一致的深蓝色 */
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  /* 始终使用浅色边框 */
+  color: #fff;
+  /* 始终使用白色文字 */
   height: 64px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+
+.sider-header {
+  padding: 16px 21px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.header-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: rgba(255, 255, 255, 0.85);
+}
+
 .sider-trigger {
-  position: absolute;
-  top: 50%;
-  right: 16px;
-  transform: translateY(-50%);
+  position: static;
   z-index: 10;
 }
 
@@ -535,6 +595,34 @@ onMounted(async () => {
   color: #fff;
   background: rgba(255, 255, 255, 0.1);
 }
+
+.collapse-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.collapse-btn :deep(.anticon) {
+  font-size: 16px;
+}
+
+/* 收起状态下的样式调整 */
+
+.app-sider.ant-layout-sider-collapsed .sider-header {
+  padding: 16px 8px;
+  justify-content: center;
+}
+
+.app-sider.ant-layout-sider-collapsed .sider-header .header-content {
+  justify-content: center;
+}
+
+.app-sider.ant-layout-sider-collapsed .sider-header .sider-trigger {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
 </style>
-
-

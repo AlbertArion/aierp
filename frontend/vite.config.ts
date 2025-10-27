@@ -4,7 +4,7 @@ import vue from '@vitejs/plugin-vue'
 // 说明：Vite配置，包含跨域代理和环境变量支持
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const apiBaseUrl = env.VITE_API_BASE_URL || 'http://localhost:3127'
+  const apiBaseUrl = env.VITE_API_BASE_URL || 'http://localhost:8000'
   
   return {
     plugins: [vue()],

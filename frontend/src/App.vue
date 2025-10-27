@@ -70,6 +70,12 @@
             </template>
             <span v-if="!collapsedEffective">核价智能体</span>
           </a-menu-item>
+          <a-menu-item key="8" @click="go('/sap-work-reports')">
+            <template #icon>
+              <DatabaseOutlined />
+            </template>
+            <span v-if="!collapsedEffective">SAP报工数据</span>
+          </a-menu-item>
           <a-menu-item key="9" @click="go('/yto-agent')">
             <template #icon>
               <RobotOutlined />

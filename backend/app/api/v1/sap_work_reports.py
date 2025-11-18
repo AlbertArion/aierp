@@ -14,6 +14,8 @@ import logging
 from app.db.sqlite_db import get_sqlite_db
 from app.repository.sap_work_report_repo import SAPWorkReportRepository
 from app.schemas.sap_work_report import SAPWorkReportSearchRequest
+from app.schemas.sap_ai_query import SAPAIQueryRequest, SAPAIQueryResponse
+from app.services.sap_ai_query_service import SAPAIQueryService
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +187,39 @@ async def get_orders_by_status(
     except Exception as e:
         logger.error(f"根据状态获取订单失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/ai-query", response_model=SAPAIQueryResponse)
+async def ai_query(
+    request: SAPAIQueryRequest,
+    db: Any = Depends(get_sqlite_db)
+):
+    """AI智能查询SAP订单报工情况"""
+    try:
+        # 创建AI查询服务
+        ai_service = SAPAIQueryService(db)
+        
+        # 处理查询
+        result = await ai_service.process_query(request.query)
+        
+        return SAPAIQueryResponse(
+            success=True,
+            data={
+                "explanation": result.explanation,
+                "rows": result.rows,
+                "tableType": result.tableType,
+                "sql": result.sql,
+                "queryType": result.queryType
+            },
+            message="AI查询成功"
+        )
+        
+    except Exception as e:
+        logger.error(f"AI查询失败: {e}")
+        return SAPAIQueryResponse(
+            success=False,
+            data=None,
+            message=f"AI查询失败: {str(e)}"
+        )
 
 @router.get("/health")
 async def health_check():

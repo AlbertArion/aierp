@@ -52,11 +52,11 @@
             </template>
             <span v-if="!collapsedEffective">{{ t('menu.rules') }}</span>
           </a-menu-item>
-          <a-menu-item key="5" v-if="!isMobile" @click="go('/work-report-preview')">
+          <a-menu-item key="5" @click="go('/sap-work-reports')">
             <template #icon>
-              <RobotOutlined />
+              <DatabaseOutlined />
             </template>
-            <span v-if="!collapsedEffective">报工查询</span>
+            <span v-if="!collapsedEffective">SAP报工数据</span>
           </a-menu-item>
           <a-menu-item key="6" @click="go('/work-report-agent')">
             <template #icon>
@@ -70,13 +70,7 @@
             </template>
             <span v-if="!collapsedEffective">核价智能体</span>
           </a-menu-item>
-          <a-menu-item key="8" @click="go('/sap-work-reports')">
-            <template #icon>
-              <DatabaseOutlined />
-            </template>
-            <span v-if="!collapsedEffective">SAP报工数据</span>
-          </a-menu-item>
-          <a-menu-item key="9" @click="go('/yto-agent')">
+          <a-menu-item key="8" @click="go('/yto-agent')">
             <template #icon>
               <RobotOutlined />
             </template>

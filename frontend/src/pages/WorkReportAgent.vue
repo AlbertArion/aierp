@@ -18,20 +18,21 @@
           </div>
           <div v-else-if="m.type === 'table'" class="table-wrapper">
             <a-table
-              :columns="columns"
+              :columns="m.tableType === 'sap' ? sapColumns : columns"
               :data-source="m.rows"
               :pagination="false"
               row-key="id"
               size="small"
-              :scroll="{ x: 720 }"
+              :scroll="{ x: m.tableType === 'sap' ? 1200 : 720 }"
               class="chat-table"
+              :resizable="true"
             />
       </div>
         </div>
       </div>
     </div>
     <div class="input-bar">
-      <a-input v-model:value="input" placeholder="例如：查询AI智能助手项目的报工情况 / 查询王五9月的报工" @pressEnter="onSend" />
+      <a-input v-model:value="input" placeholder="例如：查询1010014285订单的报工情况" @pressEnter="onSend" />
       <a-button type="primary" :loading="loading" @click="onSend">发送</a-button>
       </div>
   </div>
@@ -39,7 +40,7 @@
 
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
-import { reactive, ref, computed } from 'vue'
+import { reactive, ref, computed, nextTick } from 'vue'
 import apiClient from '../utils/axios'
 import { marked } from 'marked'
 
@@ -47,9 +48,19 @@ type ChatRow = any
 
 const input = ref('')
 const loading = ref(false)
-const messages = reactive<Array<{ role: 'user' | 'ai', content: string, type?: 'text' | 'table' | 'typing', rows?: ChatRow[] }>>([
-  { role: 'ai', content: '你好，我是 AI 报工智能体。直接用自然语言问我，例如：“查询AI智能助手项目的报工情况”。', type: 'text' }
+const messages = reactive<Array<{ role: 'user' | 'ai', content: string, type?: 'text' | 'table' | 'typing', rows?: ChatRow[], tableType?: 'work' | 'sap' }>>([
+  { role: 'ai', content: '你好，我是 AI 报工智能体。可以直接用自然语言问我，例如："查询1010014285订单的报工情况"。', type: 'text' }
 ])
+
+// 滚动到底部的函数
+const scrollToBottom = () => {
+  nextTick(() => {
+    const chatContainer = document.querySelector('.chat-window')
+    if (chatContainer) {
+      chatContainer.scrollTop = chatContainer.scrollHeight
+    }
+  })
+}
 
 const columns = [
   { title: '员工姓名', dataIndex: 'employee_name', key: 'employee_name' },
@@ -59,6 +70,24 @@ const columns = [
   { title: '工作时长', dataIndex: 'work_hours', key: 'work_hours' },
   { title: '工作内容', dataIndex: 'work_content', key: 'work_content', ellipsis: true },
   { title: '工作地点', dataIndex: 'work_location', key: 'work_location' }
+]
+
+// SAP订单查询的表格列定义
+const sapColumns = [
+  { title: '订单号', dataIndex: '订单号', key: '订单号', resizable: true },
+  { title: '订单类型', dataIndex: '订单类型', key: '订单类型', resizable: true },
+  { title: '创建人', dataIndex: '创建人', key: '创建人', resizable: true },
+  { title: '创建日期', dataIndex: '创建日期', key: '创建日期', resizable: true },
+  { title: '工厂', dataIndex: '工厂', key: '工厂', resizable: true },
+  { title: '订单数量', dataIndex: '订单数量', key: '订单数量', resizable: true },
+  { title: '订单单位', dataIndex: '订单单位', key: '订单单位', resizable: true },
+  { title: '计划完成日期', dataIndex: '计划完成日期', key: '计划完成日期', resizable: true },
+  { title: '物料号', dataIndex: '物料号', key: '物料号', resizable: true },
+  { title: '物料描述', dataIndex: '物料描述', key: '物料描述', resizable: true, ellipsis: true },
+  { title: '计划数量', dataIndex: '计划数量', key: '计划数量', resizable: true },
+  { title: '确认数量', dataIndex: '确认数量', key: '确认数量', resizable: true },
+  { title: '完成百分比', dataIndex: '完成百分比', key: '完成百分比', resizable: true },
+  { title: '状态码', dataIndex: '状态码', key: '状态码', resizable: true }
 ]
 
 // Markdown渲染函数
@@ -78,6 +107,9 @@ const onSend = async () => {
   input.value = ''
   loading.value = true
   
+  // 滚动到底部
+  scrollToBottom()
+  
   // 移动端收起软键盘
   if (window.innerWidth <= 991) {
     const inputElement = document.querySelector('.ant-input') as HTMLInputElement
@@ -91,21 +123,25 @@ const onSend = async () => {
     // 强制清除缓存，添加随机参数
     const timestamp = Date.now()
     const random = Math.random().toString(36).substring(7)
-    const { data } = await apiClient.post(`/api/work-reports/ai-query?_t=${timestamp}&_r=${random}`, { query: q, size: 20 })
+    const { data } = await apiClient.post(`/api/v1/sap-work-reports/ai-query?_t=${timestamp}&_r=${random}`, { query: q, size: 20 })
     console.log('API响应数据:', data) // 调试信息
     console.log('请求时间戳:', timestamp) // 调试信息
     if (data.success) {
       messages.splice(typingIndex, 1)
       const explanation: string | undefined = data.data?.explanation
       const rows: ChatRow[] = data.data?.rows || []
-      console.log('解析结果:', { explanation, rowsCount: rows.length }) // 调试信息
+      const tableType: 'work' | 'sap' = data.data?.tableType || 'work'
+      console.log('解析结果:', { explanation, rowsCount: rows.length, tableType }) // 调试信息
       if (explanation) {
         messages.push({ role: 'ai', content: explanation, type: 'text' })
+        scrollToBottom()
       }
       if (rows.length > 0) {
-        messages.push({ role: 'ai', content: '', type: 'table', rows })
+        messages.push({ role: 'ai', content: '', type: 'table', rows, tableType })
+        scrollToBottom()
       } else if (!explanation) {
         messages.push({ role: 'ai', content: '未找到相关报工记录，可尝试更换关键词。', type: 'text' })
+        scrollToBottom()
       }
     } else {
       messages.splice(typingIndex, 1)

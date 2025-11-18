@@ -47,9 +47,35 @@ fi
 # 检查端口是否被占用
 PORT=5176
 if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null ; then
-    echo "⚠️  端口 $PORT 已被占用，尝试停止现有进程..."
-    pkill -f "vite.*$PORT" || true
-    sleep 2
+    echo "⚠️  端口 $PORT 已被占用，正在停止现有进程..."
+    
+    # 获取占用端口的进程ID
+    PID=$(lsof -Pi :$PORT -sTCP:LISTEN -t)
+    if [ ! -z "$PID" ]; then
+        echo "🔍 找到占用端口的进程: PID $PID"
+        
+        # 尝试优雅停止
+        kill -TERM $PID 2>/dev/null || true
+        sleep 3
+        
+        # 检查是否还在运行
+        if kill -0 $PID 2>/dev/null; then
+            echo "⚠️  进程仍在运行，强制停止..."
+            kill -KILL $PID 2>/dev/null || true
+            sleep 1
+        fi
+        
+        # 再次检查端口
+        if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null ; then
+            echo "❌ 无法释放端口 $PORT，请手动检查进程"
+            echo "💡 可以运行: lsof -i :$PORT 查看占用情况"
+            exit 1
+        else
+            echo "✅ 端口 $PORT 已释放"
+        fi
+    fi
+else
+    echo "✅ 端口 $PORT 可用"
 fi
 
 # 启动前端服务

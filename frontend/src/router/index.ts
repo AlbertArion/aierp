@@ -15,7 +15,6 @@ const routes: RouteRecordRaw[] = [
   { path: '/rules', component: () => import('../pages/Rules.vue'), meta: { requiresAuth: true, role: 'admin' } },
   // 兼容旧路径：将已废弃的 /work-report-chat 重定向到新的 /work-report-agent
   { path: '/work-report-chat', redirect: '/work-report-agent' },
-        { path: '/work-report-preview', component: () => import('../pages/WorkReportPreview.vue'), meta: { requiresAuth: true, role: 'admin' } },
         { path: '/work-report-agent', component: () => import('../pages/WorkReportAgent.vue'), meta: { requiresAuth: true, role: 'admin' } },
         { path: '/pricing-agent', component: () => import('../pages/PricingAgent.vue'), meta: { requiresAuth: true, role: 'admin' } },
         { path: '/pricing-batch', component: () => import('../pages/PricingBatch.vue'), meta: { requiresAuth: true, role: 'admin' } },

@@ -148,13 +148,30 @@ async def init_test_data(memory_db):
 def create_app() -> FastAPI:
     app = FastAPI(title="AI ERP Backend", version="0.1.0")
 
-    # CORS配置：前后端分离，允许本地开发端口访问
+    # CORS配置：支持跨域访问，允许所有来源、方法和头部
+    # 支持通过环境变量 CORS_ORIGINS 配置允许的来源（逗号分隔）
+    # 例如：CORS_ORIGINS="http://localhost:5176,http://localhost:3000,https://example.com"
+    # 如果未设置环境变量，则允许所有来源（开发环境）
+    cors_origins_env = os.getenv("CORS_ORIGINS", "")
+    if cors_origins_env:
+        # 从环境变量读取允许的来源列表
+        allow_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+        allow_credentials = True  # 明确指定来源时，可以安全地启用凭证
+    else:
+        # 未配置环境变量时，允许所有来源（开发环境）
+        allow_origins = ["*"]
+        # 注意：当 allow_origins=["*"] 时，某些浏览器可能不支持 allow_credentials=True
+        # 如果遇到问题，建议设置 CORS_ORIGINS 环境变量明确指定允许的来源
+        allow_credentials = True
+    
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=allow_origins,  # 允许的来源列表
+        allow_credentials=allow_credentials,  # 允许携带凭证（cookies, authorization headers等）
+        allow_methods=["*"],  # 允许所有HTTP方法（GET, POST, PUT, DELETE, OPTIONS等）
+        allow_headers=["*"],  # 允许所有请求头
+        expose_headers=["*"],  # 暴露所有响应头给前端
+        max_age=3600,  # 预检请求缓存时间（秒）
     )
 
     # 请求ID与开发环境全局限流（可按需调整limit）

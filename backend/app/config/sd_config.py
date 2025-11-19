@@ -1,0 +1,55 @@
+"""
+SD服务配置管理
+"""
+import os
+import base64
+
+class SDConfig:
+    """SD服务配置类"""
+    # SD服务基础URL（从环境变量读取）
+    # 选项1：通过网关访问（推荐，支持负载均衡和服务发现）
+    # BASE_URL = "http://localhost:9015"
+    # 选项2：直接访问SD服务（开发调试，需要SD服务运行在9991端口）
+    # BASE_URL = "http://localhost:9991"
+    BASE_URL = os.getenv("SD_API_BASE_URL", "http://localhost:9015")
+    
+    # 请求超时时间（秒）
+    TIMEOUT = int(os.getenv("SD_API_TIMEOUT", "30"))
+    
+    # 重试次数
+    RETRY_COUNT = int(os.getenv("SD_API_RETRY_COUNT", "3"))
+    
+    # 服务间认证Token（可选，如果需要服务间认证）
+    API_TOKEN = os.getenv("SD_API_TOKEN", None)
+    
+    # OAuth2客户端凭证（用于Basic认证，与前端保持一致）
+    CLIENT_ID = os.getenv("SD_CLIENT_ID", "saber3")
+    CLIENT_SECRET = os.getenv("SD_CLIENT_SECRET", "saber3_secret")
+    
+    @classmethod
+    def get_headers(cls, additional_headers: dict = None) -> dict:
+        """获取请求头"""
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # 添加Blade-Requested-With头（与前端保持一致）
+            "Blade-Requested-With": "BladeHttpRequest"
+        }
+        
+        # 添加Basic认证头（OAuth2客户端认证，与前端保持一致）
+        # 格式：Basic base64(clientId:clientSecret)
+        basic_auth = base64.b64encode(
+            f"{cls.CLIENT_ID}:{cls.CLIENT_SECRET}".encode('utf-8')
+        ).decode('utf-8')
+        headers["Authorization"] = f"Basic {basic_auth}"
+        
+        # 如果配置了API Token，会通过additional_headers覆盖Authorization头
+        # 但我们需要同时保留Basic认证和Bearer token，所以这里只设置Basic
+        # Bearer token会通过Blade-Auth头传递
+        
+        # 合并额外的请求头
+        if additional_headers:
+            headers.update(additional_headers)
+        
+        return headers
+

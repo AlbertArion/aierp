@@ -85,7 +85,7 @@ def _match_condition(event: dict, cond: dict) -> bool:
 @router.post("/events")
 async def post_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """处理事件并触发规则执行"""
-    triggered: list[str] = []
+    triggered: List[str] = []
     classified_alerts = []
     
     # 1. 传统简单规则匹配

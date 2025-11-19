@@ -9,10 +9,9 @@ export {};
 	const __VLS_directiveBindingRestFields: { instance: null, oldValue: null, modifiers: any, dir: any };
 	const __VLS_unref: typeof import('vue').unref;
 	const __VLS_placeholder: any;
+	const __VLS_intrinsics: import('vue/jsx-runtime').JSX.IntrinsicElements;
 
-	type __VLS_NativeElements = __VLS_SpreadMerge<SVGElementTagNameMap, HTMLElementTagNameMap>;
-	type __VLS_IntrinsicElements = import('vue/jsx-runtime').JSX.IntrinsicElements;
-	type __VLS_Element = import('vue/jsx-runtime').JSX.Element;
+	type __VLS_Elements = __VLS_SpreadMerge<SVGElementTagNameMap, HTMLElementTagNameMap>;
 	type __VLS_GlobalComponents = import('vue').GlobalComponents & Pick<typeof import('vue'), 'Transition' | 'TransitionGroup' | 'KeepAlive' | 'Suspense' | 'Teleport'>;
 	type __VLS_GlobalDirectives = import('vue').GlobalDirectives;
 	type __VLS_IsAny<T> = 0 extends 1 & T ? true : false;
@@ -35,7 +34,7 @@ export {};
 		? K extends { __ctx?: { props?: infer P } } ? NonNullable<P> : never
 		: T extends (props: infer P, ...args: any) => any ? P
 		: {};
-	type __VLS_FunctionalComponent<T> = (props: (T extends { $props: infer Props } ? Props : {}) & Record<string, unknown>, ctx?: any) => __VLS_Element & {
+	type __VLS_FunctionalComponent<T> = (props: (T extends { $props: infer Props } ? Props : {}) & Record<string, unknown>, ctx?: any) => import('vue/jsx-runtime').JSX.Element & {
 		__ctx?: {
 			attrs?: any;
 			slots?: T extends { $slots: infer Slots } ? Slots : Record<string, any>;

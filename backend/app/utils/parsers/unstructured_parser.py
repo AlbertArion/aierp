@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, List
 import io
 import pdfplumber
 from openpyxl import load_workbook
@@ -7,7 +7,7 @@ from openpyxl import load_workbook
 
 
 def parse_pdf_to_text(content: bytes) -> str:
-    text_parts: list[str] = []
+    text_parts: List[str] = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for page in pdf.pages:
             text_parts.append(page.extract_text() or "")
@@ -17,7 +17,7 @@ def parse_pdf_to_text(content: bytes) -> str:
 def parse_excel_to_text(content: bytes) -> str:
     buf = io.BytesIO(content)
     wb = load_workbook(buf, read_only=True, data_only=True)
-    parts: list[str] = []
+    parts: List[str] = []
     for ws in wb.worksheets:
         parts.append(f"# Sheet: {ws.title}")
         for row in ws.iter_rows(values_only=True):

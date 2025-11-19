@@ -18,6 +18,16 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
+# 检查Python版本（需要3.8+）
+PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 8 ]); then
+    echo "❌ 错误：需要 Python 3.8 或更高版本，当前版本: $(python3 --version)"
+    exit 1
+fi
+
 echo "📦 Python版本: $(python3 --version)"
 
 # 检查虚拟环境
@@ -123,9 +133,17 @@ else
         STATSMODELS_OK=true
     fi
     
-    # 6. 安装其他依赖（条件安装）
+    # 6. 修复typing-extensions版本冲突（tensorflow需要<4.6.0）
+    echo "📦 修复typing-extensions版本冲突..."
+    if check_dependency tensorflow; then
+        echo "📦 检测到tensorflow，安装兼容的typing-extensions版本..."
+        pip install "typing-extensions<4.6.0,>=3.6.6" --force-reinstall --no-deps 2>/dev/null || pip install "typing-extensions<4.6.0,>=3.6.6"
+        echo "✅ typing-extensions版本已修复"
+    fi
+    
+    # 7. 安装其他依赖（条件安装）
     echo "📦 检查其他依赖..."
-    for pkg in pymongo snowflake_connector requests pdfplumber openpyxl pymysql; do
+    for pkg in pymongo snowflake_connector requests pdfplumber openpyxl pymysql httpx; do
         if ! check_dependency $pkg; then
             case $pkg in
                 pymongo) pip install pymongo==4.8.0 ;;
@@ -134,6 +152,7 @@ else
                 pdfplumber) pip install pdfplumber==0.11.4 ;;
                 openpyxl) pip install openpyxl==3.1.5 ;;
                 pymysql) pip install PyMySQL==1.1.1 ;;
+                httpx) pip install httpx==0.27.0 ;;
             esac
             echo "✅ $pkg 安装完成"
         else

@@ -1,3 +1,5 @@
+from __future__ import annotations  # 支持Python 3.8的类型注解
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .middleware.request_id import RequestIdMiddleware
@@ -140,8 +142,6 @@ async def init_test_data(memory_db):
             
             memory_db["work_reports"].append(work_report)
         
-        logging.info(f"测试数据初始化完成: {len(memory_db['work_reports'])} 条报工记录")
-        
     except Exception as e:
         logging.error(f"初始化测试数据失败: {e}")
 
@@ -194,7 +194,6 @@ def create_app() -> FastAPI:
         
         # 检查是否已有数据
         if len(memory_db["work_reports"]) == 0:
-            logging.info("初始化报工智能体测试数据...")
             await init_test_data(memory_db)
 
     return app

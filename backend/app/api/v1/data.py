@@ -24,7 +24,7 @@ flink_manager = FlinkStreamManager()
 
 class SyncRequest(BaseModel):
     source: str  # 数据源标识，如 SAP/用友
-    tables: list[str]  # 需要同步的表
+    tables: List[str]  # 需要同步的表
     source_config: Optional[Dict[str, Any]] = None  # 源系统配置
     use_datax: bool = True  # 是否使用DataX
     real_time: bool = False  # 是否实时同步

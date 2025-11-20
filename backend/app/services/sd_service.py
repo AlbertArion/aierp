@@ -145,7 +145,7 @@ class SDService:
                     if status_code == 401:
                         raise Exception(f"SD服务认证失败: {error_msg}。请检查token是否有效、未过期，以及格式是否正确（应为bearer格式的JWT token）")
                     else:
-                        raise Exception(f"SD服务错误: {error_msg}")
+                        raise Exception(f"{error_msg}")
                 
                 # 5xx错误重试
                 if attempt < self.retry_count - 1:
@@ -226,7 +226,7 @@ class SDService:
         # 通过网关访问时，路径需要包含服务名称前缀
         return await self._request(
             method="GET",
-            path="/sinocst-module-sd/sinocst-vbak/vbak/detail",
+            path="/sinocst-module-sd/sinocst-vbak/vbak/getVbDetail",
             params={"vbeln": vbeln}
         )
     
@@ -264,4 +264,89 @@ class SDService:
             path="/sinocst-master-data/likp/sd/save",
             json=order_data
         )
+    
+    async def get_yesterday_last_order(self) -> Optional[Dict[str, Any]]:
+        """
+        获取昨天的最后一个销售订单
+        
+        Returns:
+            订单详情数据，如果不存在则返回None
+        """
+        from datetime import datetime, timedelta
+        
+        # 计算昨天的日期范围
+        yesterday = datetime.now() - timedelta(days=1)
+        yesterday_str = yesterday.strftime("%Y%m%d")
+        
+        # 查询昨天的订单列表（后端默认按创建时间倒序排列，第一条就是最后一个）
+        params = {
+            "current": 1,
+            "size": 1,
+            "erdatStart": yesterday_str,
+            "erdatEnd": yesterday_str
+        }
+        
+        result = await self._request(
+            method="GET",
+            path="/sinocst-module-sd/sinocst-vbak/vbak/list",
+            params=params
+        )
+        
+        data = result.get("data", {})
+        records = data.get("records", [])
+        
+        if records and len(records) > 0:
+            # 获取订单详情
+            vbeln = records[0].get("vbeln")
+            if vbeln:
+                detail_result = await self.get_order_detail(vbeln)
+                return detail_result.get("data")
+        
+        return None
+    
+    async def create_sales_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        创建销售订单
+        
+        Args:
+            order_data: 订单数据（VbShowVO格式）
+        
+        Returns:
+            创建结果（包含订单号）
+        """
+        # 创建销售订单接口
+        return await self._request(
+            method="POST",
+            path="/sinocst-module-sd/sinocst-vbak/vbak/saveVb",
+            json=order_data
+        )
+    
+    async def get_sales_office_by_name(self, name_keyword: str) -> Optional[Dict[str, Any]]:
+        """
+        根据名称关键词查找销售办事处
+        
+        Args:
+            name_keyword: 名称关键词（如"华东"）
+        
+        Returns:
+            销售办事处信息，如果不存在则返回None
+        """
+        # 获取销售办事处列表
+        result = await self._request(
+            method="GET",
+            path="/sinocst-master-data/tvbur/page",
+            params={"current": 1, "size": 100}
+        )
+        
+        data = result.get("data", {})
+        records = data.get("records", []) or data.get("data", [])
+        
+        # 查找名称包含关键词的销售办事处
+        for office in records:
+            vtext = office.get("vtext", "") or ""
+            txnam_sdb = office.get("txnamSdb", "") or office.get("txnam_sdb", "") or ""
+            if name_keyword in vtext or name_keyword in txnam_sdb:
+                return office
+        
+        return None
 

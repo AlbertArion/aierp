@@ -248,6 +248,202 @@ class SDService:
             params={"vgbel": vbeln}
         )
     
+    async def check_atp_detailed(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        执行详细的ATP检查，返回每个物料的检查结果
+        
+        Args:
+            order_data: 订单数据（SdKoShowVO格式）
+        
+        Returns:
+            详细的ATP检查结果，包含每个物料的库存信息
+        """
+        from typing import List
+        
+        ps_list = order_data.get("psList", [])
+        if not ps_list:
+            return {
+                "success": False,
+                "message": "订单没有行项目数据",
+                "items": []
+            }
+        
+        # 查询每个物料的库存
+        mandt = order_data.get("mandt", "600")
+        mard_request_list = []
+        for ps in ps_list:
+            if not ps.get("matnr") or not ps.get("werks"):
+                continue
+            mard_request_list.append({
+                "mandt": mandt,
+                "matnr": ps.get("matnr"),
+                "werks": ps.get("werks"),
+                "lgort": ps.get("lgort")
+            })
+        
+        if not mard_request_list:
+            return {
+                "success": False,
+                "message": "没有有效的物料信息",
+                "items": []
+            }
+        
+        # 调用库存查询接口
+        mard_result = await self._request(
+            method="POST",
+            path="/sinocst-module-wm/sinocst-mard/mard/getStatusById",
+            json=mard_request_list
+        )
+        
+        mard_list = mard_result.get("data", [])
+        if not mard_list:
+            return {
+                "success": False,
+                "message": "查询库存失败",
+                "items": []
+            }
+        
+        # 构建库存映射表
+        # 当库存地点为空时，需要汇总该物料在该工厂下所有库存地点的库存
+        mard_map = {}
+        mard_map_by_matnr_werks = {}  # 用于汇总：key = matnr-werks
+        
+        for mard in mard_list:
+            matnr = mard.get('matnr')
+            werks = mard.get('werks')
+            lgort = mard.get('lgort') or ''
+            
+            # 精确匹配的key（包含库存地点）
+            key = f"{matnr}-{werks}-{lgort}"
+            mard_map[key] = mard
+            
+            # 汇总key（不包含库存地点，用于库存地点为空时的汇总）
+            summary_key = f"{matnr}-{werks}"
+            if summary_key not in mard_map_by_matnr_werks:
+                mard_map_by_matnr_werks[summary_key] = {
+                    "labst": 0.0,
+                    "speme": 0.0,
+                    "lgort_list": [],
+                    "maktx": mard.get("maktx") or ""
+                }
+            
+            # 累加库存
+            summary = mard_map_by_matnr_werks[summary_key]
+            summary["labst"] += float(mard.get("labst") or 0)
+            summary["speme"] += float(mard.get("speme") or 0)
+            if lgort and lgort not in summary["lgort_list"]:
+                summary["lgort_list"].append(lgort)
+        
+        # 查询预留库存（需要调用预留库存接口，这里先简化处理）
+        # 注意：预留库存查询需要调用lips接口，暂时先返回0
+        # 实际应该调用：/sinocst-master-data/lips/getReservedQty
+        
+        # 构建检查结果
+        items = []
+        all_available = True
+        
+        for ps in ps_list:
+            matnr = ps.get("matnr")
+            werks = ps.get("werks")
+            lgort = ps.get("lgort")
+            need_qty = float(ps.get("lfimg") or ps.get("zmeng") or 0)
+            
+            if not matnr or not werks:
+                continue
+            
+            # 先尝试精确匹配（如果指定了库存地点）
+            mard = None
+            if lgort:
+                key = f"{matnr}-{werks}-{lgort}"
+                mard = mard_map.get(key)
+            
+            # 如果精确匹配失败，或者库存地点为空，尝试汇总所有库存地点
+            if not mard:
+                summary_key = f"{matnr}-{werks}"
+                summary = mard_map_by_matnr_werks.get(summary_key)
+                
+                if summary:
+                    # 使用汇总数据
+                    labst = summary["labst"]
+                    speme = summary["speme"]
+                    available_qty = labst - speme
+                    reserved_qty = 0  # 预留库存（暂时设为0）
+                    actual_available_qty = available_qty - reserved_qty
+                    is_available = actual_available_qty >= need_qty
+                    
+                    # 显示所有库存地点
+                    lgort_display = ", ".join(summary["lgort_list"]) if summary["lgort_list"] else (lgort or "")
+                    
+                    items.append({
+                        "matnr": matnr,
+                        "matnr_name": summary.get("maktx") or ps.get("maktx") or "",
+                        "werks": werks,
+                        "lgort": lgort_display,
+                        "need_qty": need_qty,
+                        "labst": labst,
+                        "speme": speme,
+                        "available_qty": available_qty,
+                        "reserved_qty": reserved_qty,
+                        "actual_available_qty": actual_available_qty,
+                        "is_available": is_available,
+                        "message": "库存充足" if is_available else f"库存不足：需要 {need_qty}，实际可用 {actual_available_qty}"
+                    })
+                    
+                    if not is_available:
+                        all_available = False
+                    continue
+                else:
+                    # 没有找到任何库存
+                    items.append({
+                        "matnr": matnr,
+                        "matnr_name": ps.get("maktx") or "",
+                        "werks": werks,
+                        "lgort": lgort or "",
+                        "need_qty": need_qty,
+                        "labst": 0,  # 总库存
+                        "speme": 0,  # 冻结库存
+                        "available_qty": 0,  # 可用库存
+                        "reserved_qty": 0,  # 预留库存
+                        "actual_available_qty": 0,  # 实际可用库存
+                        "is_available": False,
+                        "message": f"物料 {matnr} 在工厂 {werks}{' 库存地点 ' + lgort if lgort else ''} 未维护库存"
+                    })
+                    all_available = False
+                    continue
+            
+            # 精确匹配成功，使用精确数据
+            labst = float(mard.get("labst") or 0)  # 总库存（非限制库存）
+            speme = float(mard.get("speme") or 0)  # 冻结库存
+            available_qty = labst - speme  # 可用库存
+            reserved_qty = 0  # 预留库存（暂时设为0，实际应该查询）
+            actual_available_qty = available_qty - reserved_qty  # 实际可用库存
+            
+            is_available = actual_available_qty >= need_qty
+            
+            items.append({
+                "matnr": matnr,
+                "matnr_name": mard.get("maktx") or ps.get("maktx") or "",
+                "werks": werks,
+                "lgort": lgort or mard.get("lgort") or "",
+                "need_qty": need_qty,
+                "labst": labst,
+                "speme": speme,
+                "available_qty": available_qty,
+                "reserved_qty": reserved_qty,
+                "actual_available_qty": actual_available_qty,
+                "is_available": is_available,
+                "message": "库存充足" if is_available else f"库存不足：需要 {need_qty}，实际可用 {actual_available_qty}"
+            })
+            
+            if not is_available:
+                all_available = False
+        
+        return {
+            "success": all_available,
+            "message": "ATP检查通过" if all_available else "ATP检查失败：部分物料库存不足",
+            "items": items
+        }
+    
     async def create_delivery(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         创建交货单（内部会进行ATP检查）

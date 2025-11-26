@@ -447,22 +447,40 @@ async def pp_ai_query(
         # 根据意图处理
         if intent == "QUERY_ORDER_LIST":
             # 提取查询参数
+            page_current = payload.get("current", 1)
+            page_size = payload.get("size", 20)  # 默认每页20条
+            
             params = {
-                "current": 1,
-                "size": 20  # 默认每页20条
+                "current": page_current,
+                "size": page_size
             }
             matnr = extracted.get("matnr") or _extract_material_number(query)
             if matnr:
                 params["matnr"] = matnr
             
             result = await pp_service.get_order_list(params)
+            
+            # 获取分页数据
+            page_data = result.get("data", {}) if isinstance(result, dict) else {}
+            if page_data is None:
+                page_data = {}
+            
+            total = page_data.get("total", 0) if isinstance(page_data, dict) else 0
+            records = page_data.get("records", []) if isinstance(page_data, dict) else []
+            
+            # 计算总页数
+            pages = (total + page_size - 1) // page_size if total > 0 else 0
+            
             return {
                 "success": True,
                 "intent": intent,
                 "data": {
                     "type": "order_list",
-                    "orders": result.get("data", {}).get("records", []),
-                    "total": result.get("data", {}).get("total", 0)
+                    "orders": records,
+                    "total": total,
+                    "current": page_current,
+                    "size": page_size,
+                    "pages": pages
                 },
                 "message": "查询生产订单列表成功"
             }
@@ -595,6 +613,12 @@ async def pp_ai_query(
                     {"field": "vornr", "label": "工序", "visible": True, "width": 100},
                     {"field": "ltxa1", "label": "工序描述", "visible": True, "width": 150},
                     {"field": "steus", "label": "工序控制码", "visible": False, "width": 120},
+                    {"field": "arbid", "label": "工作中心", "visible": False, "width": 120},
+                    {"field": "workReportStartDate", "label": "报工开始日期", "visible": False, "width": 150},
+                    {"field": "workReportEndDate", "label": "报工结束日期", "visible": False, "width": 150},
+                    {"field": "systemStatusText", "label": "系统状态", "visible": False, "width": 120},
+                    {"field": "workReportRestTime", "label": "报工休息时间", "visible": False, "width": 120},
+                    {"field": "workReportActualPeriod", "label": "报工实际期间", "visible": False, "width": 120},
                     {"field": "mgvrg", "label": "目标数量", "visible": True, "width": 120},
                     {"field": "lmnga", "label": "已确认数量", "visible": True, "width": 120},
                     {"field": "xmnga", "label": "报废数量", "visible": True, "width": 120},
@@ -875,6 +899,12 @@ async def pp_ai_query(
                     {"field": "vornr", "label": "工序", "visible": True, "width": 100},
                     {"field": "ltxa1", "label": "工序描述", "visible": True, "width": 150},
                     {"field": "steus", "label": "工序控制码", "visible": False, "width": 120},
+                    {"field": "arbid", "label": "工作中心", "visible": False, "width": 120},
+                    {"field": "workReportStartDate", "label": "报工开始日期", "visible": False, "width": 150},
+                    {"field": "workReportEndDate", "label": "报工结束日期", "visible": False, "width": 150},
+                    {"field": "systemStatusText", "label": "系统状态", "visible": False, "width": 120},
+                    {"field": "workReportRestTime", "label": "报工休息时间", "visible": False, "width": 120},
+                    {"field": "workReportActualPeriod", "label": "报工实际期间", "visible": False, "width": 120},
                     {"field": "mgvrg", "label": "目标数量", "visible": True, "width": 120},
                     {"field": "lmnga", "label": "已确认数量", "visible": True, "width": 120},
                     {"field": "xmnga", "label": "报废数量", "visible": True, "width": 120},
@@ -1089,6 +1119,12 @@ async def adjust_columns(
             {"field": "vornr", "label": "工序", "visible": True, "width": 100},
             {"field": "ltxa1", "label": "工序描述", "visible": True, "width": 150},
             {"field": "steus", "label": "工序控制码", "visible": False, "width": 120},
+            {"field": "arbid", "label": "工作中心", "visible": False, "width": 120},
+            {"field": "workReportStartDate", "label": "报工开始日期", "visible": False, "width": 150},
+            {"field": "workReportEndDate", "label": "报工结束日期", "visible": False, "width": 150},
+            {"field": "systemStatusText", "label": "系统状态", "visible": False, "width": 120},
+            {"field": "workReportRestTime", "label": "报工休息时间", "visible": False, "width": 120},
+            {"field": "workReportActualPeriod", "label": "报工实际期间", "visible": False, "width": 120},
             {"field": "mgvrg", "label": "目标数量", "visible": True, "width": 120},
             {"field": "lmnga", "label": "已确认数量", "visible": True, "width": 120},
             {"field": "xmnga", "label": "报废数量", "visible": True, "width": 120},
@@ -1100,7 +1136,20 @@ async def adjust_columns(
         field_mappings = {
             "工序控制码": "steus",
             "控制码": "steus",
-            "steus": "steus"
+            "steus": "steus",
+            "STEUS": "steus",
+            "工作中心": "arbid",
+            "报工开始日期": "workReportStartDate",
+            "开始日期": "workReportStartDate",
+            "报工结束日期": "workReportEndDate",
+            "结束日期": "workReportEndDate",
+            "系统状态": "systemStatusText",
+            "状态": "systemStatusText",
+            "报工休息时间": "workReportRestTime",
+            "休息时间": "workReportRestTime",
+            "报工实际期间": "workReportActualPeriod",
+            "实际期间": "workReportActualPeriod",
+            "报工工时": "workReportActualPeriod"
         }
         
         # 如果没有提供当前列配置，使用默认配置
@@ -1129,41 +1178,81 @@ async def adjust_columns(
                             result_columns.append({**default_col, "visible": True})
                         fields_to_add.append(default_col.get("label", field))
             
-            # 检查用户消息中是否提到了工序控制码
+            # 检查用户消息中是否提到了特定字段，并自动添加
             user_message_lower = user_message.lower()
-            if "工序控制码" in user_message or "控制码" in user_message or "steus" in user_message_lower or "STEUS" in user_message:
-                existing_steus = next((col for col in result_columns if col.get("field") == "steus"), None)
-                ltxa1_index = next((i for i, col in enumerate(result_columns) if col.get("field") == "ltxa1"), -1)
+            
+            # 定义需要特殊处理的字段及其关键词
+            special_fields = [
+                {
+                    "field": "steus",
+                    "label": "工序控制码",
+                    "keywords": ["工序控制码", "控制码", "steus", "STEUS"],
+                    "insert_after": "ltxa1"
+                },
+                {
+                    "field": "arbid",
+                    "label": "工作中心",
+                    "keywords": ["工作中心", "arbid"],
+                    "insert_after": "steus"
+                },
+                {
+                    "field": "workReportStartDate",
+                    "label": "报工开始日期",
+                    "keywords": ["报工开始日期", "开始日期"],
+                    "insert_after": "arbid"
+                },
+                {
+                    "field": "workReportEndDate",
+                    "label": "报工结束日期",
+                    "keywords": ["报工结束日期", "结束日期"],
+                    "insert_after": "workReportStartDate"
+                },
+                {
+                    "field": "systemStatusText",
+                    "label": "系统状态",
+                    "keywords": ["系统状态", "状态"],
+                    "insert_after": "workReportEndDate"
+                },
+                {
+                    "field": "workReportRestTime",
+                    "label": "报工休息时间",
+                    "keywords": ["报工休息时间", "休息时间"],
+                    "insert_after": "systemStatusText"
+                },
+                {
+                    "field": "workReportActualPeriod",
+                    "label": "报工实际期间",
+                    "keywords": ["报工实际期间", "实际期间", "报工工时", "工时"],
+                    "insert_after": "workReportRestTime"
+                }
+            ]
+            
+            # 检查每个特殊字段
+            for field_config in special_fields:
+                field_name = field_config["field"]
+                field_label = field_config["label"]
+                keywords = field_config["keywords"]
+                insert_after = field_config["insert_after"]
                 
-                if not existing_steus:
-                    # 如果字段不存在，在工序描述（ltxa1）后面插入工序控制码
-                    if ltxa1_index >= 0:
-                        result_columns.insert(ltxa1_index + 1, {
-                            "field": "steus",
-                            "label": "工序控制码",
-                            "visible": True,
-                            "width": 120
-                        })
-                        fields_to_add.append("工序控制码")
-                else:
-                    # 如果字段已存在，确保它在正确的位置（ltxa1后面）且可见
-                    current_steus_index = next((i for i, col in enumerate(result_columns) if col.get("field") == "steus"), -1)
+                # 检查用户消息中是否包含该字段的关键词
+                if any(kw in user_message or kw.lower() in user_message_lower for kw in keywords):
+                    existing_field = next((col for col in result_columns if col.get("field") == field_name), None)
+                    insert_after_index = next((i for i, col in enumerate(result_columns) if col.get("field") == insert_after), -1)
                     
-                    # 如果不在正确位置，先移除再插入
-                    if current_steus_index >= 0 and ltxa1_index >= 0 and current_steus_index != ltxa1_index + 1:
-                        steus_col = result_columns.pop(current_steus_index)
-                        steus_col["visible"] = True
-                        # 重新查找ltxa1的位置（因为索引可能已改变）
-                        ltxa1_index = next((i for i, col in enumerate(result_columns) if col.get("field") == "ltxa1"), -1)
-                        if ltxa1_index >= 0:
-                            result_columns.insert(ltxa1_index + 1, steus_col)
-                        else:
-                            result_columns.append(steus_col)
-                        fields_to_add.append("工序控制码")
-                    elif not existing_steus.get("visible", False):
-                        # 如果存在但不可见，设置为可见
-                        existing_steus["visible"] = True
-                        fields_to_add.append("工序控制码")
+                    if not existing_field:
+                        # 如果字段不存在，在指定位置插入
+                        default_col = next((col for col in default_columns if col.get("field") == field_name), None)
+                        if default_col:
+                            if insert_after_index >= 0:
+                                result_columns.insert(insert_after_index + 1, {**default_col, "visible": True})
+                            else:
+                                result_columns.append({**default_col, "visible": True})
+                            fields_to_add.append(field_label)
+                    else:
+                        # 如果字段已存在，确保它可见
+                        if not existing_field.get("visible", False):
+                            existing_field["visible"] = True
+                            fields_to_add.append(field_label)
             
             if fields_to_add:
                 message = f"已添加字段：{', '.join(fields_to_add)}"
@@ -1200,13 +1289,30 @@ async def adjust_columns(
                         break
             
             # 如果用户消息中提到了字段但没有在fields中找到，尝试从消息中提取
-            # 检查工序控制码
-            if "工序控制码" in user_message or "控制码" in user_message or "steus" in user_message.lower():
-                for col in result_columns:
-                    if col.get("field") == "steus":
-                        col["visible"] = True
-                        if "工序控制码" not in fields_to_show:
-                            fields_to_show.append("工序控制码")
+            # 检查所有特殊字段
+            special_fields_for_show = [
+                {"field": "steus", "label": "工序控制码", "keywords": ["工序控制码", "控制码", "steus"]},
+                {"field": "arbid", "label": "工作中心", "keywords": ["工作中心", "arbid"]},
+                {"field": "workReportStartDate", "label": "报工开始日期", "keywords": ["报工开始日期", "开始日期"]},
+                {"field": "workReportEndDate", "label": "报工结束日期", "keywords": ["报工结束日期", "结束日期"]},
+                {"field": "systemStatusText", "label": "系统状态", "keywords": ["系统状态", "状态"]},
+                {"field": "workReportRestTime", "label": "报工休息时间", "keywords": ["报工休息时间", "休息时间"]},
+                {"field": "workReportActualPeriod", "label": "报工实际期间", "keywords": ["报工实际期间", "实际期间", "报工工时", "工时"]}
+            ]
+            
+            user_message_lower_show = user_message.lower()
+            for field_config in special_fields_for_show:
+                field_name = field_config["field"]
+                field_label = field_config["label"]
+                keywords = field_config["keywords"]
+                
+                if any(kw in user_message or kw.lower() in user_message_lower_show for kw in keywords):
+                    for col in result_columns:
+                        if col.get("field") == field_name:
+                            col["visible"] = True
+                            if field_label not in fields_to_show:
+                                fields_to_show.append(field_label)
+                            break
             
             if fields_to_show:
                 message = f"已设置为只显示字段：{', '.join(fields_to_show)}"

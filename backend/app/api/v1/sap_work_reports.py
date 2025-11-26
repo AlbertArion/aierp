@@ -6,7 +6,7 @@ SAP报工数据API接口
 提供SAP报工数据的RESTful API
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from typing import Dict, List, Any, Optional
 from datetime import date
 import logging
@@ -21,9 +21,34 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/sap-work-reports", tags=["SAP报工数据"])
 
-def get_sap_repo(db = Depends(get_sqlite_db)) -> SAPWorkReportRepository:
-    """获取SAP报工数据Repository"""
-    return SAPWorkReportRepository(db)
+def get_sap_repo(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    blade_auth: Optional[str] = Header(None, alias="Blade-Auth")
+) -> SAPWorkReportRepository:
+    """获取SAP报工数据Repository（现在使用PostgreSQL数据源）"""
+    repo = SAPWorkReportRepository()
+    
+    # 从请求头获取token并设置到repository
+    token = None
+    if authorization:
+        if authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", 1)[1].strip()
+        else:
+            token = authorization.strip()
+    
+    if not token and blade_auth:
+        if blade_auth.lower().startswith("bearer "):
+            token = blade_auth.split(" ", 1)[1].strip()
+        elif blade_auth.lower().startswith("crypto "):
+            token = blade_auth.strip()
+        else:
+            token = blade_auth.strip()
+    
+    if token:
+        repo.set_token(token)
+        logger.info(f"Token已设置到SAPWorkReportRepository (长度: {len(token)})")
+    
+    return repo
 
 @router.get("/search")
 async def search_work_reports(

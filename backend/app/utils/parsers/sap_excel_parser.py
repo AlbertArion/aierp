@@ -69,7 +69,7 @@ class SAPExcelParser:
                 record = {
                     'id': str(uuid.uuid4()),
                     'mandt': self._safe_str(row.get('MANDT')),
-                    'aufnr': self._safe_str(row.get('AUFNR')),
+                    'aufnr': self._safe_aufnr(row.get('AUFNR')),
                     'gltrp': self._safe_date(row.get('GLTRP')),
                     'gstrp': self._safe_date(row.get('GSTRP')),
                     'ftrms': self._safe_date(row.get('FTRMS')),
@@ -110,7 +110,7 @@ class SAPExcelParser:
                 record = {
                     'id': str(uuid.uuid4()),
                     'mandt': self._safe_str(row.get('MANDT')),
-                    'aufnr': self._safe_str(row.get('AUFNR')),
+                    'aufnr': self._safe_aufnr(row.get('AUFNR')),
                     'posnr': self._safe_str(row.get('POSNR')),
                     'psobs': self._safe_str(row.get('PSOBS')),
                     'qunum': self._safe_str(row.get('QUNUM')),
@@ -627,7 +627,7 @@ class SAPExcelParser:
                 record = {
                     'id': str(uuid.uuid4()),
                     'mandt': self._safe_str(row.get('MANDT')),
-                    'aufnr': self._safe_str(row.get('AUFNR')),
+                    'aufnr': self._safe_aufnr(row.get('AUFNR')),
                     'auart': self._safe_str(row.get('AUART')),
                     'autyp': self._safe_str(row.get('AUTYP')),
                     'refnr': self._safe_str(row.get('REFNR')),
@@ -822,6 +822,20 @@ class SAPExcelParser:
         if pd.isna(value) or value is None:
             return None
         return str(value).strip() if str(value).strip() else None
+    
+    def _safe_aufnr(self, value: Any) -> Optional[str]:
+        """安全转换为订单号字符串，确保12位格式（前导零填充）"""
+        if pd.isna(value) or value is None:
+            return None
+        # 转换为字符串并去除空格
+        aufnr_str = str(value).strip()
+        if not aufnr_str:
+            return None
+        # 如果是纯数字，格式化为12位（前导零填充）
+        if aufnr_str.isdigit():
+            return aufnr_str.zfill(12)
+        # 如果不是纯数字，直接返回（可能包含字母等）
+        return aufnr_str
     
     def _safe_float(self, value: Any) -> Optional[float]:
         """安全转换为浮点数"""

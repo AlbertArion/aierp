@@ -4,20 +4,33 @@
 """
 SAP报工数据Repository
 提供SAP报工数据的数据库操作接口
+现在使用PostgreSQL作为数据源（通过Java项目的API）
 """
 
 import logging
 from typing import Dict, List, Any, Optional
 from datetime import date, datetime
 from app.db.sqlite_db import SQLiteCollection
+from app.services.pp_service import PPService
 
 logger = logging.getLogger(__name__)
 
 class SAPWorkReportRepository:
-    """SAP报工数据Repository"""
+    """SAP报工数据Repository - 使用PostgreSQL数据源"""
     
-    def __init__(self, db):
+    def __init__(self, db=None):
+        """
+        初始化Repository
+        
+        Args:
+            db: SQLite数据库连接（保留以支持其他方法，但不再用于主要查询）
+        """
         self.db = db
+        self.pp_service = PPService()
+    
+    def set_token(self, token: str):
+        """设置认证token（用于调用Java项目API）"""
+        self.pp_service.set_token(token)
     
     async def search_work_reports(self, 
                                 keyword: Optional[str] = None,
@@ -28,66 +41,127 @@ class SAPWorkReportRepository:
                                 end_date: Optional[date] = None,
                                 page: int = 1,
                                 size: int = 20) -> Dict[str, Any]:
-        """搜索报工数据"""
+        """搜索报工数据 - 使用PostgreSQL数据源"""
         try:
-            # 构建查询条件
-            filter_dict = {}
-            
-            if aufnr:
-                filter_dict['aufnr'] = aufnr
-            if matnr:
-                filter_dict['matnr'] = matnr
-            if werks:
-                filter_dict['werks'] = werks
-            if start_date:
-                filter_dict['erdat'] = {'$gte': start_date.isoformat()}
-            if end_date:
-                filter_dict['erdat'] = {'$lte': end_date.isoformat()}
-            
-            # 关键字搜索
-            if keyword:
-                # 在多个字段中搜索关键字
-                keyword_filter = {
-                    '$or': [
-                        {'aufnr': {'$regex': keyword}},
-                        {'ktext': {'$regex': keyword}},
-                        {'ltext': {'$regex': keyword}},
-                        {'ernam': {'$regex': keyword}},
-                        {'aenam': {'$regex': keyword}}
-                    ]
-                }
-                if filter_dict:
-                    filter_dict = {'$and': [filter_dict, keyword_filter]}
-                else:
-                    filter_dict = keyword_filter
-            
-            # 查询AUFK表（订单主数据）
-            aufk_collection = self.db.get_collection('aufk')
-            aufk_records = aufk_collection.find(filter_dict)
-            
-            # 分页
-            total = len(aufk_records)
-            start_index = (page - 1) * size
-            end_index = start_index + size
-            records = aufk_records[start_index:end_index]
-            
-            # 关联查询其他表的数据
-            enriched_records = []
-            for record in records:
-                enriched_record = await self._enrich_record(record)
-                enriched_records.append(enriched_record)
-            
-            return {
-                'records': enriched_records,
-                'total': total,
-                'page': page,
-                'size': size,
-                'pages': (total + size - 1) // size
+            # 构建查询参数（用于Java项目的listV2接口）
+            params = {
+                'current': page,
+                'size': size
             }
             
+            # 添加查询条件
+            if aufnr:
+                params['aufnr'] = aufnr
+            if matnr:
+                params['matnr'] = matnr
+            if werks:
+                params['werks'] = werks
+            if start_date:
+                # Java项目可能使用不同的日期格式，这里使用ISO格式
+                params['gstrp'] = start_date.strftime('%Y%m%d')
+            if end_date:
+                params['gltrp'] = end_date.strftime('%Y%m%d')
+            
+            # 关键字搜索（如果Java项目支持）
+            if keyword:
+                params['aufnr'] = keyword  # 或者使用专门的keyword参数，取决于Java接口
+            
+            # 调用Java项目的生产订单列表接口
+            logger.info(f"查询报工数据: 调用PostgreSQL数据源, params={params}")
+            result = await self.pp_service.get_order_list(params)
+            
+            # 解析Java项目的响应格式
+            # 期望格式: {"code": 200, "success": true, "data": {"records": [...], "total": 100, ...}}
+            if result and result.get('code') == 200:
+                data = result.get('data', {})
+                
+                if isinstance(data, dict):
+                    records = data.get('records', [])
+                    total = data.get('total', len(records))
+                    
+                    # 转换数据格式以匹配原有接口
+                    enriched_records = []
+                    for record in records:
+                        # 转换Java项目返回的数据格式到报工一览表需要的格式
+                        enriched_record = self._convert_to_work_report_format(record)
+                        enriched_records.append(enriched_record)
+                    
+                    # 计算总页数
+                    pages = (total + size - 1) // size if total > 0 else 0
+                    
+                    return {
+                        'records': enriched_records,
+                        'total': total,
+                        'page': page,
+                        'size': size,
+                        'pages': pages
+                    }
+                else:
+                    # 如果返回的不是分页数据，直接返回
+                    logger.warning(f"返回的数据格式不符合预期: {type(data)}")
+                    return {
+                        'records': [],
+                        'total': 0,
+                        'page': page,
+                        'size': size,
+                        'pages': 0
+                    }
+            else:
+                error_msg = result.get('msg', '查询失败') if result else '响应为空'
+                logger.error(f"查询报工数据失败: {error_msg}")
+                return {
+                    'records': [],
+                    'total': 0,
+                    'page': page,
+                    'size': size,
+                    'pages': 0
+                }
+            
         except Exception as e:
-            logger.error(f"搜索报工数据失败: {e}")
+            logger.error(f"搜索报工数据失败: {e}", exc_info=True)
             raise
+    
+    def _convert_to_work_report_format(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        将Java项目返回的生产订单数据格式转换为报工一览表需要的格式
+        
+        Args:
+            record: Java项目返回的生产订单记录
+            
+        Returns:
+            转换后的记录格式
+        """
+        # Java项目返回的数据可能包含以下字段：
+        # aufnr, matnr, maktx, auart, werks, gamng, gmein, stat, statL等
+        
+        # 提取订单类型（auart）
+        auart = record.get('auart', '')
+        
+        # 提取状态信息
+        stat = record.get('stat', '')
+        statL = record.get('statL', [])
+        
+        # 转换后的记录格式（兼容原有格式）
+        converted = {
+            'aufnr': record.get('aufnr', ''),
+            'matnr': record.get('matnr', ''),
+            'maktx': record.get('maktx', ''),  # 物料描述
+            'auart': auart,  # 订单类型
+            'werks': record.get('werks', ''),
+            'gamng': record.get('gamng'),  # 订单数量
+            'gmein': record.get('gmein', ''),  # 单位
+            'gstrp': record.get('gstrp', ''),  # 开始日期
+            'gltrp': record.get('gltrp', ''),  # 完成日期
+            'stat': stat,  # 状态
+            'statL': statL,  # 状态列表
+            'kdauf': record.get('kdauf', ''),  # 销售订单号
+            'kdpos': record.get('kdpos', ''),  # 销售订单行项目号
+            'objnr': record.get('objnr', ''),
+            # 保留原始记录的所有字段
+            **record
+        }
+        
+        return converted
     
     async def _enrich_record(self, aufk_record: Dict[str, Any]) -> Dict[str, Any]:
         """丰富记录数据，关联其他表"""

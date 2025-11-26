@@ -22,7 +22,33 @@ class PPService:
     def set_token(self, token: str):
         """设置认证token"""
         self.token = token
+    
+    def _normalize_aufnr(self, aufnr: str) -> str:
+        """
+        规范化生产订单号格式
+        SAP生产订单号通常是12位，但用户可能输入10位数字
+        需要尝试两种格式：原格式和补零到12位
         
+        Args:
+            aufnr: 原始订单号
+            
+        Returns:
+            规范化后的订单号（保持原格式，因为数据库可能存储的是10位）
+        """
+        if not aufnr:
+            return aufnr
+        
+        # 去除空格
+        aufnr = aufnr.strip()
+        
+        # 如果是纯数字且长度小于12，尝试补零到12位
+        if aufnr.isdigit():
+            # 先尝试原格式（10位），如果查询不到再尝试12位格式
+            # 注意：数据库可能存储的是10位格式，所以先保持原格式
+            return aufnr
+        
+        return aufnr
+    
     async def _request(
         self, 
         method: str, 
@@ -76,6 +102,7 @@ class PPService:
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     logger.info(f"调用PP服务: {method} {path} (尝试 {attempt + 1}/{self.retry_count})")
+                    logger.info(f"请求参数: {params}")
                     
                     response = await client.request(
                         method=method,
@@ -99,6 +126,7 @@ class PPService:
                         return {"code": 200, "success": True, "data": result, "msg": "响应格式异常"}
                     
                     logger.info(f"PP服务响应成功: {path}, 响应类型: {type(result)}")
+                    logger.debug(f"响应数据: {result}")
                     return result
                     
             except httpx.HTTPStatusError as e:
@@ -166,7 +194,33 @@ class PPService:
         Returns:
             订单详情数据
         """
-        return await self._request("GET", "/sinocst-module-pp/productOrder/detail", params={"aufnr": aufnr})
+        # 规范化订单号格式
+        normalized_aufnr = self._normalize_aufnr(aufnr)
+        logger.info(f"查询生产订单详情: 原始订单号={aufnr}, 规范化后={normalized_aufnr}")
+        
+        # 先尝试原格式查询
+        result = await self._request("GET", "/sinocst-module-pp/productOrder/detail", params={"aufnr": normalized_aufnr})
+        
+        # 检查返回的数据是否为空
+        if result and result.get("code") == 200:
+            data = result.get("data", {})
+            # 如果数据为空或关键字段为空，尝试12位格式
+            if not data or (isinstance(data, dict) and not data.get("aufnr")):
+                # 如果原格式是10位数字，尝试补零到12位
+                if normalized_aufnr.isdigit() and len(normalized_aufnr) == 10:
+                    padded_aufnr = normalized_aufnr.zfill(12)
+                    logger.info(f"原格式查询无数据，尝试12位格式: {padded_aufnr}")
+                    result = await self._request("GET", "/sinocst-module-pp/productOrder/detail", params={"aufnr": padded_aufnr})
+                # 如果原格式是12位，尝试去掉前导零
+                elif normalized_aufnr.isdigit() and len(normalized_aufnr) == 12:
+                    # 去掉前导零，但保留至少10位
+                    trimmed_aufnr = normalized_aufnr.lstrip('0')
+                    if len(trimmed_aufnr) < 10:
+                        trimmed_aufnr = trimmed_aufnr.zfill(10)
+                    logger.info(f"12位格式查询无数据，尝试去掉前导零: {trimmed_aufnr}")
+                    result = await self._request("GET", "/sinocst-module-pp/productOrder/detail", params={"aufnr": trimmed_aufnr})
+        
+        return result
     
     async def get_unreported_work_list(self, params: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -178,6 +232,10 @@ class PPService:
         Returns:
             未报工情况列表数据
         """
+        # 如果参数中有aufnr，规范化订单号
+        if params and "aufnr" in params:
+            params["aufnr"] = self._normalize_aufnr(params["aufnr"])
+        
         return await self._request("GET", "/sinocst-module-pp/workReport/unreported", params=params)
     
     async def get_work_report_list(self, params: Optional[Dict] = None) -> Dict[str, Any]:
@@ -190,6 +248,10 @@ class PPService:
         Returns:
             报工一览表数据
         """
+        # 如果参数中有aufnr，规范化订单号
+        if params and "aufnr" in params:
+            params["aufnr"] = self._normalize_aufnr(params["aufnr"])
+        
         return await self._request("GET", "/sinocst-module-pp/workReport/list", params=params)
     
     async def month_end_check(self, params: Optional[Dict] = None) -> Dict[str, Any]:
@@ -214,5 +276,6 @@ class PPService:
         Returns:
             订单状态数据
         """
-        return await self._request("GET", "/sinocst-module-pp/productOrder/status", params={"aufnr": aufnr})
-
+        # 规范化订单号格式
+        normalized_aufnr = self._normalize_aufnr(aufnr)
+        return await self._request("GET", "/sinocst-module-pp/productOrder/status", params={"aufnr": normalized_aufnr})

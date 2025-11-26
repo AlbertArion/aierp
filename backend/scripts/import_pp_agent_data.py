@@ -434,6 +434,22 @@ def insert_data(conn, table_name: str, df: pd.DataFrame, batch_size: int = 1000)
             max_len = column_info[col]['max_length']
             nullable = column_info[col]['nullable']
             
+            # 特殊处理：订单号字段（aufnr）确保12位格式（前导零填充）
+            if col == 'aufnr' and col in df_filtered.columns:
+                def format_aufnr(val):
+                    if pd.isna(val) or val is None:
+                        return None
+                    aufnr_str = str(val).strip()
+                    if not aufnr_str or aufnr_str.lower() in ['nan', 'none', 'nat']:
+                        return None
+                    # 如果是纯数字，格式化为12位（前导零填充）
+                    if aufnr_str.isdigit():
+                        return aufnr_str.zfill(12)
+                    # 如果不是纯数字，直接返回（可能包含字母等）
+                    return aufnr_str
+                df_filtered[col] = df_filtered[col].apply(format_aufnr)
+                logger.info(f"已格式化订单号字段 {col} 为12位格式")
+            
             # 截断超长字符串（对所有有长度限制的字段都处理）
             if max_len:
                 import re

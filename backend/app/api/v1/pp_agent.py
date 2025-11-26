@@ -91,9 +91,12 @@ def _extract_material_number(text: str) -> Optional[str]:
 def _extract_process_number(text: str) -> Optional[str]:
     """从文本中提取工序号（vornr）"""
     patterns = [
-        r"(?:工序号|工序|VORNR)[\s\-:]?([0-9]{1,4})",
-        r"工序[\s\-:]?([0-9]{1,4})",
+        r"(?:工序号|工序|VORNR)[\s\-:：，,]?([0-9]{1,4})",
         r"([0-9]{1,4})[\s\-]?工序",
+        r"工序[\s\-:：，,]?([0-9]{1,4})",
+        # 匹配"物料XXX，工序YYY"这种格式
+        r"物料[^，,]*[，,]\s*工序\s*([0-9]{1,4})",
+        r"物料[^，,]*[，,]\s*([0-9]{1,4})\s*工序",
     ]
     
     for pattern in patterns:

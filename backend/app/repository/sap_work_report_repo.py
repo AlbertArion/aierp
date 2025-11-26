@@ -133,6 +133,7 @@ class SAPWorkReportRepository:
         """
         # Java项目返回的数据可能包含以下字段：
         # aufnr, matnr, maktx, auart, werks, gamng, gmein, stat, statL等
+        # 报工一览表相关的字段：vornr, ltxa1, steus, mgvrg, lmnga, xmnga, plnbez等
         
         # 提取订单类型（auart）
         auart = record.get('auart', '')
@@ -144,10 +145,17 @@ class SAPWorkReportRepository:
         # 转换后的记录格式（兼容原有格式）
         converted = {
             'aufnr': record.get('aufnr', ''),
+            'plnbez': record.get('plnbez', record.get('matnr', '')),  # 物料号（优先使用plnbez）
             'matnr': record.get('matnr', ''),
             'maktx': record.get('maktx', ''),  # 物料描述
             'auart': auart,  # 订单类型
             'werks': record.get('werks', ''),
+            'vornr': record.get('vornr', ''),  # 工序号
+            'ltxa1': record.get('ltxa1', ''),  # 工序描述
+            'steus': record.get('steus', ''),  # 工序控制码（从afvc表获取）
+            'mgvrg': record.get('mgvrg', record.get('gamng')),  # 目标数量
+            'lmnga': record.get('lmnga', record.get('gasmg', 0)),  # 已确认数量
+            'xmnga': record.get('xmnga', 0),  # 报废数量
             'gamng': record.get('gamng'),  # 订单数量
             'gmein': record.get('gmein', ''),  # 单位
             'gstrp': record.get('gstrp', ''),  # 开始日期
@@ -157,7 +165,7 @@ class SAPWorkReportRepository:
             'kdauf': record.get('kdauf', ''),  # 销售订单号
             'kdpos': record.get('kdpos', ''),  # 销售订单行项目号
             'objnr': record.get('objnr', ''),
-            # 保留原始记录的所有字段
+            # 保留原始记录的所有字段（包括steus等可能从afvc表关联的字段）
             **record
         }
         

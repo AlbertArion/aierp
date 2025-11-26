@@ -246,8 +246,8 @@ def _identify_intent(text: str) -> str:
     if any(keyword in text_lower for keyword in ["未报工", "待报工", "未完成报工"]):
         return "QUERY_UNREPORTED_WORK"
     
-    # 报工查询意图
-    if any(keyword in text_lower for keyword in ["报工", "报工情况", "报工一览表", "报工明细"]):
+    # 报工查询意图（包括已报工、部分报工查询）
+    if any(keyword in text_lower for keyword in ["报工", "报工情况", "报工一览表", "报工明细", "已报工", "报工完成", "部分报工", "已部分报工"]):
         return "QUERY_WORK_REPORT"
     
     # 生产订单查询意图 - 改进识别逻辑
@@ -464,8 +464,18 @@ async def pp_ai_query(
             }
         
         elif intent == "QUERY_UNREPORTED_WORK":
+            # 检查是否是统计查询（包含"统计"、"有多少个"、"数量"等关键词）
+            query_lower = query.lower()
+            is_statistics_query = any(keyword in query_lower for keyword in [
+                "统计", "有多少", "多少个", "数量", "几条", "多少条", 
+                "count", "总数", "合计", "共计"
+            ])
+            
             # 提取查询参数
-            params = {}
+            params = {
+                "current": payload.get("current", 1),
+                "size": payload.get("size", 100) if is_statistics_query else payload.get("size", 10)  # 统计查询获取更多数据
+            }
             aufnr = extracted.get("aufnr") or _extract_order_number(query)
             if aufnr:
                 params["aufnr"] = aufnr
@@ -479,39 +489,132 @@ async def pp_ai_query(
             # 检查result是否为None或不是字典
             if result is None:
                 logger.warning("未报工情况查询返回None")
-                return {
-                    "success": False,
-                    "intent": intent,
-                    "message": "查询未报工情况失败：后端返回空数据",
-                    "data": {
-                        "type": "work_report_list",
-                        "items": [],
-                        "total": 0
+                if is_statistics_query:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": "统计未报工订单失败：后端返回空数据",
+                        "data": {
+                            "type": "statistics_with_list",
+                            "count": 0,
+                            "description": "未报工的订单数量为 0 个。未报工是指已确认数量为0的生产订单工序。",
+                            "items": [],
+                            "total": 0,
+                            "current": 1,
+                            "size": 10,
+                            "pages": 0
+                        }
                     }
-                }
+                else:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": "查询未报工情况失败：后端返回空数据",
+                        "data": {
+                            "type": "work_report_list",
+                            "items": [],
+                            "total": 0
+                        }
+                    }
             
             # IPage对象包含records字段，需要转换为items
             page_data = result.get("data") if isinstance(result, dict) else {}
             if page_data is None:
                 page_data = {}
             
+            total = page_data.get("total", 0) if isinstance(page_data, dict) else 0
+            records = page_data.get("records", []) if isinstance(page_data, dict) else []
+            
+            # 如果是统计查询，返回统计结果和列表
+            if is_statistics_query:
+                # 应用分页
+                page_size = payload.get("size", 10)
+                page_current = payload.get("current", 1)
+                start_idx = (page_current - 1) * page_size
+                end_idx = start_idx + page_size
+                paginated_records = records[start_idx:end_idx]
+                pages = (total + page_size - 1) // page_size if total > 0 else 0
+                
+                # 获取默认列配置（与 work_report_list 保持一致）
+                default_columns = [
+                    {"field": "aufnr", "label": "生产订单号", "visible": True, "width": 160},
+                    {"field": "plnbez", "label": "物料号", "visible": True, "width": 120},
+                    {"field": "maktx", "label": "物料描述", "visible": True, "width": 200},
+                    {"field": "auart", "label": "订单类型", "visible": True, "width": 100},
+                    {"field": "werks", "label": "工厂", "visible": True, "width": 100},
+                    {"field": "vornr", "label": "工序", "visible": True, "width": 100},
+                    {"field": "ltxa1", "label": "工序描述", "visible": True, "width": 150},
+                    {"field": "steus", "label": "工序控制码", "visible": False, "width": 120},
+                    {"field": "mgvrg", "label": "目标数量", "visible": True, "width": 120},
+                    {"field": "lmnga", "label": "已确认数量", "visible": True, "width": 120},
+                    {"field": "xmnga", "label": "报废数量", "visible": True, "width": 120},
+                    {"field": "diff_qty", "label": "差异数量", "visible": True, "width": 120},
+                    {"field": "gmein", "label": "基本计量单位", "visible": True, "width": 120}
+                ]
+                
+                # 确保每条记录都包含steus字段
+                for record in paginated_records:
+                    if 'steus' not in record:
+                        record['steus'] = record.get('steus', '')
+                
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "statistics_with_list",
+                        "count": total,
+                        "description": f"未报工的订单数量为 {total} 个。未报工是指已确认数量为0的生产订单工序。",
+                        "items": paginated_records,
+                        "total": total,
+                        "current": page_current,
+                        "size": page_size,
+                        "pages": pages,
+                        "column_config": page_data.get("column_config") if isinstance(page_data, dict) and page_data.get("column_config") else default_columns
+                    },
+                    "message": f"统计完成：共有 {total} 个未报工的订单"
+                }
+            
+            # 否则返回列表数据
             return {
                 "success": True,
                 "intent": intent,
                 "data": {
                     "type": "work_report_list",
-                    "items": page_data.get("records", []) if isinstance(page_data, dict) else [],
-                    "total": page_data.get("total", 0) if isinstance(page_data, dict) else 0,
+                    "items": records,
+                    "total": total,
                     "column_config": page_data.get("column_config") if isinstance(page_data, dict) else None
                 },
                 "message": "查询未报工情况成功"
             }
         
         elif intent == "QUERY_WORK_REPORT":
+            # 检查报工状态类型
+            query_lower = query.lower()
+            
+            # 检查是否是统计查询
+            is_statistics_query = any(keyword in query_lower for keyword in [
+                "统计", "有多少", "多少个", "数量", "几条", "多少条", 
+                "count", "总数", "合计", "共计"
+            ])
+            
+            # 检查报工状态：未报工、已报工、部分报工
+            is_unreported_query = any(keyword in query_lower for keyword in [
+                "未报工", "待报工", "未完成报工"
+            ])
+            is_reported_query = any(keyword in query_lower for keyword in [
+                "已报工", "报工完成", "已完成报工", "已完成的报工",
+                "展示已报工", "显示已报工", "查询已报工", "已报工的", "已报工列表"
+            ])
+            is_partial_reported_query = any(keyword in query_lower for keyword in [
+                "部分报工", "已部分报工", "部分完成", "已部分完成"
+            ])
+            
             # 提取分页参数
+            # 对于需要过滤的查询，获取更多数据用于准确过滤
+            need_filter = is_unreported_query or is_reported_query or is_partial_reported_query
             params = {
                 "current": payload.get("current", 1),
-                "size": payload.get("size", 10)
+                "size": payload.get("size", 100) if (need_filter or is_statistics_query) else payload.get("size", 10)
             }
             aufnr = extracted.get("aufnr") or _extract_order_number(query)
             if aufnr:
@@ -551,18 +654,146 @@ async def pp_ai_query(
             pages = (total + size - 1) // size if total > 0 else 0
             current = params.get("current", 1)
             
+            # 获取记录列表，确保包含steus字段（工序控制码）
+            # 注意：steus字段应该从afvc表的steus字段获取，需要Java后端在SQL查询中包含该字段
+            records = page_data.get("records", []) if isinstance(page_data, dict) else []
+            
+            # 根据查询类型过滤记录
+            filter_description = ""
+            if is_unreported_query:
+                # 未报工：已确认数量=0
+                filtered_records = []
+                for record in records:
+                    lmnga = record.get('lmnga', 0) or 0
+                    try:
+                        lmnga_num = float(lmnga) if lmnga != '' and lmnga is not None else 0
+                        if abs(lmnga_num) < 0.001:
+                            filtered_records.append(record)
+                    except (ValueError, TypeError):
+                        continue
+                records = filtered_records
+                total = len(filtered_records)
+                filter_description = "未报工是指已确认数量为0的生产订单工序。"
+                
+            elif is_reported_query:
+                # 已报工：已确认数量=目标数量 且 目标数量>0
+                filtered_records = []
+                for record in records:
+                    lmnga = record.get('lmnga', 0) or 0
+                    mgvrg = record.get('mgvrg', 0) or 0
+                    try:
+                        lmnga_num = float(lmnga) if lmnga != '' and lmnga is not None else 0
+                        mgvrg_num = float(mgvrg) if mgvrg != '' and mgvrg is not None else 0
+                        if abs(lmnga_num - mgvrg_num) < 0.001 and mgvrg_num > 0:
+                            filtered_records.append(record)
+                    except (ValueError, TypeError):
+                        continue
+                records = filtered_records
+                total = len(filtered_records)
+                filter_description = "已报工是指已确认数量等于目标数量的生产订单工序。"
+                
+            elif is_partial_reported_query:
+                # 部分报工：已确认数量>0 且 < 目标数量
+                filtered_records = []
+                for record in records:
+                    lmnga = record.get('lmnga', 0) or 0
+                    mgvrg = record.get('mgvrg', 0) or 0
+                    try:
+                        lmnga_num = float(lmnga) if lmnga != '' and lmnga is not None else 0
+                        mgvrg_num = float(mgvrg) if mgvrg != '' and mgvrg is not None else 0
+                        if lmnga_num > 0.001 and lmnga_num < mgvrg_num - 0.001:
+                            filtered_records.append(record)
+                    except (ValueError, TypeError):
+                        continue
+                records = filtered_records
+                total = len(filtered_records)
+                filter_description = "部分报工是指已确认数量大于0但小于目标数量的生产订单工序。"
+            
+            # 应用分页（如果需要过滤，已经过滤过了）
+            if need_filter or is_statistics_query:
+                page_size = payload.get("size", 10)
+                page_current = payload.get("current", 1)
+                start_idx = (page_current - 1) * page_size
+                end_idx = start_idx + page_size
+                paginated_records = records[start_idx:end_idx]
+                records = paginated_records
+                size = page_size
+                current = page_current
+                pages = (total + size - 1) // size if total > 0 else 0
+            
+            # 确保每条记录都包含steus字段
+            for record in records:
+                if 'steus' not in record:
+                    record['steus'] = record.get('steus', '')
+            
+            # 如果是统计查询，返回统计结果和列表
+            if is_statistics_query:
+                status_text = ""
+                if is_unreported_query:
+                    status_text = "未报工"
+                elif is_reported_query:
+                    status_text = "已报工"
+                elif is_partial_reported_query:
+                    status_text = "部分报工"
+                else:
+                    status_text = "报工"
+                
+                # 获取默认列配置（确保表格有列可显示）
+                default_columns = [
+                    {"field": "aufnr", "label": "生产订单号", "visible": True, "width": 160},
+                    {"field": "plnbez", "label": "物料号", "visible": True, "width": 120},
+                    {"field": "maktx", "label": "物料描述", "visible": True, "width": 200},
+                    {"field": "auart", "label": "订单类型", "visible": True, "width": 100},
+                    {"field": "werks", "label": "工厂", "visible": True, "width": 100},
+                    {"field": "vornr", "label": "工序", "visible": True, "width": 100},
+                    {"field": "ltxa1", "label": "工序描述", "visible": True, "width": 150},
+                    {"field": "steus", "label": "工序控制码", "visible": False, "width": 120},
+                    {"field": "mgvrg", "label": "目标数量", "visible": True, "width": 120},
+                    {"field": "lmnga", "label": "已确认数量", "visible": True, "width": 120},
+                    {"field": "xmnga", "label": "报废数量", "visible": True, "width": 120},
+                    {"field": "diff_qty", "label": "差异数量", "visible": True, "width": 120},
+                    {"field": "gmein", "label": "基本计量单位", "visible": True, "width": 120}
+                ]
+                
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "statistics_with_list",
+                        "count": total,
+                        "description": f"{status_text}的订单数量为 {total} 个。{filter_description}",
+                        "items": records,
+                        "total": total,
+                        "current": current,
+                        "size": size,
+                        "pages": pages,
+                        "column_config": page_data.get("column_config") if isinstance(page_data, dict) and page_data.get("column_config") else default_columns
+                    },
+                    "message": f"统计完成：共有 {total} 个{status_text}的订单"
+                }
+            
+            # 否则返回列表数据
+            message = "查询报工一览表成功"
+            if is_unreported_query:
+                message = "查询未报工列表成功"
+            elif is_reported_query:
+                message = "查询已报工列表成功"
+            elif is_partial_reported_query:
+                message = "查询部分报工列表成功"
+            
             return {
                 "success": True,
                 "intent": intent,
                 "data": {
                     "type": "work_report_list",
-                    "items": page_data.get("records", []) if isinstance(page_data, dict) else [],
+                    "items": records,
                     "total": total,
                     "current": current,
                     "size": size,
-                    "pages": pages
+                    "pages": pages,
+                    "column_config": page_data.get("column_config") if isinstance(page_data, dict) else None
                 },
-                "message": "查询报工一览表成功"
+                "message": message
             }
         
         elif intent == "MONTH_END_CHECK":
@@ -600,14 +831,36 @@ async def pp_ai_query(
         elif intent == "ADJUST_COLUMNS":
             # 字段调整逻辑（核心创新功能）
             # 这里返回字段调整指令，由前端处理
+            query_lower = query.lower()
+            
+            # 检查是否是"只显示"模式（只显示指定字段，隐藏其他所有字段）
+            is_show_only = any(kw in query_lower for kw in [
+                "只显示", "只需要", "只需要展示", "只展示", "仅显示", "仅展示",
+                "只要", "只要显示", "只保留", "仅保留"
+            ])
+            
+            # 检查是否是"隐藏"模式
+            is_remove = any(kw in query_lower for kw in ["移除", "隐藏", "不要显示", "去掉", "删除", "不显示"])
+            
+            # 检查是否是"添加"模式
+            is_add = any(kw in query_lower for kw in ["增加", "添加", "显示", "展示", "包含"])
+            
+            # 确定action
+            if is_show_only:
+                action = "show_only"  # 只显示指定字段，隐藏其他
+            elif is_remove:
+                action = "remove"  # 移除/隐藏指定字段
+            elif is_add:
+                action = "add"  # 添加/显示指定字段
+            else:
+                action = "reset"  # 重置为默认
+            
             return {
                 "success": True,
                 "intent": intent,
                 "data": {
                     "type": "column_adjustment",
-                    "action": "remove" if any(kw in query.lower() for kw in ["移除", "隐藏", "不要显示", "去掉", "删除", "不显示"]) 
-                             else "add" if any(kw in query.lower() for kw in ["增加", "添加", "显示", "展示", "包含"])
-                             else "reset",
+                    "action": action,
                     "user_message": query
                 },
                 "message": "字段调整指令已识别"
@@ -780,6 +1033,35 @@ async def adjust_columns(
             
             if fields_to_remove:
                 message = f"已移除字段：{', '.join(fields_to_remove)}"
+            else:
+                message = "字段调整完成"
+        
+        elif action == "show_only":
+            # 只显示指定字段，隐藏其他所有字段
+            # 首先，将所有字段设为不可见
+            for col in result_columns:
+                col["visible"] = False
+            
+            # 然后，将用户指定的字段设为可见
+            fields_to_show = []
+            for field in fields:
+                for col in result_columns:
+                    if col.get("field") == field:
+                        col["visible"] = True
+                        fields_to_show.append(col.get("label", field))
+                        break
+            
+            # 如果用户消息中提到了字段但没有在fields中找到，尝试从消息中提取
+            # 检查工序控制码
+            if "工序控制码" in user_message or "控制码" in user_message or "steus" in user_message.lower():
+                for col in result_columns:
+                    if col.get("field") == "steus":
+                        col["visible"] = True
+                        if "工序控制码" not in fields_to_show:
+                            fields_to_show.append("工序控制码")
+            
+            if fields_to_show:
+                message = f"已设置为只显示字段：{', '.join(fields_to_show)}"
             else:
                 message = "字段调整完成"
         

@@ -88,6 +88,24 @@ def _extract_material_number(text: str) -> Optional[str]:
     
     return None
 
+def _extract_process_number(text: str) -> Optional[str]:
+    """从文本中提取工序号（vornr）"""
+    patterns = [
+        r"(?:工序号|工序|VORNR)[\s\-:]?([0-9]{1,4})",
+        r"工序[\s\-:]?([0-9]{1,4})",
+        r"([0-9]{1,4})[\s\-]?工序",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            vornr = match.group(1).strip()
+            # 工序号通常是1-4位数字
+            if 1 <= len(vornr) <= 4:
+                return vornr
+    
+    return None
+
 async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
     """
     使用LLM识别用户意图（智能解析）
@@ -128,6 +146,7 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
     "extracted": {
         "aufnr": "订单号（如果提到）",
         "matnr": "物料号（如果提到）",
+        "vornr": "工序号（如果提到）",
         "werks": "工厂（如果提到）"
     },
     "reasoning": "简要说明识别理由"
@@ -135,9 +154,12 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 
 注意：
 - 订单号通常是10-12位数字
+- 物料号通常是字母+数字组合，至少6位
+- 工序号通常是1-4位数字
 - 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等，应该是QUERY_ORDER_DETAIL
+- 如果用户提到"查询XXX订单的报工情况"、"查询XXX物料，XXX工序的报工情况"，应该是QUERY_WORK_REPORT
 - 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
-- 优先提取订单号，即使表达不完整也要识别"""
+- 优先提取订单号、物料号、工序号，即使表达不完整也要识别"""
 
         user_prompt = f"用户查询：{text}\n\n请识别意图并提取关键信息。"
         
@@ -487,6 +509,9 @@ async def pp_ai_query(
             if matnr:
                 # 后端接口使用plnbez作为物料号参数
                 params["plnbez"] = matnr
+            vornr = extracted.get("vornr") or _extract_process_number(query)
+            if vornr:
+                params["vornr"] = vornr
             
             result = await pp_service.get_unreported_work_list(params)
             
@@ -645,6 +670,9 @@ async def pp_ai_query(
             if matnr:
                 # 后端接口使用plnbez作为物料号参数
                 params["plnbez"] = matnr
+            vornr = extracted.get("vornr") or _extract_process_number(query)
+            if vornr:
+                params["vornr"] = vornr
             
             # 如果查询已报工，直接调用已报工接口（在后端SQL中过滤，效率更高）
             if is_reported_query:

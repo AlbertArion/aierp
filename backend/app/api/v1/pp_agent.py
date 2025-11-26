@@ -759,6 +759,58 @@ async def pp_ai_query(
                 if 'steus' not in record:
                     record['steus'] = record.get('steus', '')
             
+            # 计算报工状态总结（无论是否为统计查询都计算）
+            def calculate_work_report_summary(records_list):
+                """计算报工状态总结"""
+                total_count = len(records_list)
+                reported_count = 0  # 已报工：lmnga == mgvrg
+                unreported_count = 0  # 未报工：lmnga == 0
+                partial_reported_count = 0  # 部分报工：lmnga > 0 && lmnga < mgvrg
+                total_mgvrg = 0.0  # 总目标数量
+                total_lmnga = 0.0  # 总确认数量
+                total_xmnga = 0.0  # 总报废数量
+                total_diff_qty = 0.0  # 总差异数量
+                
+                for record in records_list:
+                    try:
+                        mgvrg = float(record.get('mgvrg', 0) or 0)
+                        lmnga = float(record.get('lmnga', 0) or 0)
+                        xmnga = float(record.get('xmnga', 0) or 0)
+                        diff_qty = float(record.get('diff_qty', 0) or 0)
+                        
+                        total_mgvrg += mgvrg
+                        total_lmnga += lmnga
+                        total_xmnga += xmnga
+                        total_diff_qty += diff_qty
+                        
+                        # 判断报工状态（使用0.001作为浮点数比较的容差）
+                        if abs(lmnga - mgvrg) < 0.001 and mgvrg > 0.001:
+                            reported_count += 1
+                        elif abs(lmnga) < 0.001:
+                            unreported_count += 1
+                        elif lmnga > 0.001 and lmnga < mgvrg - 0.001:
+                            partial_reported_count += 1
+                    except (ValueError, TypeError):
+                        continue
+                
+                # 计算完成率
+                completion_rate = (total_lmnga / total_mgvrg * 100) if total_mgvrg > 0.001 else 0.0
+                
+                return {
+                    "total_count": total_count,
+                    "reported_count": reported_count,
+                    "unreported_count": unreported_count,
+                    "partial_reported_count": partial_reported_count,
+                    "total_mgvrg": round(total_mgvrg, 3),
+                    "total_lmnga": round(total_lmnga, 3),
+                    "total_xmnga": round(total_xmnga, 3),
+                    "total_diff_qty": round(total_diff_qty, 3),
+                    "completion_rate": round(completion_rate, 2)
+                }
+            
+            # 计算总结（基于当前页的数据，如果是统计查询则基于全部数据）
+            summary = calculate_work_report_summary(records)
+            
             # 如果是统计查询，返回统计结果和列表
             if is_statistics_query:
                 status_text = ""
@@ -788,6 +840,10 @@ async def pp_ai_query(
                     {"field": "gmein", "label": "基本计量单位", "visible": True, "width": 120}
                 ]
                 
+                # 生成总结描述
+                summary_text = f"共 {summary['total_count']} 条记录，其中：已报工 {summary['reported_count']} 条，未报工 {summary['unreported_count']} 条，部分报工 {summary['partial_reported_count']} 条。"
+                summary_text += f"总目标数量：{summary['total_mgvrg']}，总确认数量：{summary['total_lmnga']}，总报废数量：{summary['total_xmnga']}，完成率：{summary['completion_rate']}%。"
+                
                 return {
                     "success": True,
                     "intent": intent,
@@ -795,6 +851,8 @@ async def pp_ai_query(
                         "type": "statistics_with_list",
                         "count": total,
                         "description": f"{status_text}的订单数量为 {total} 个。{filter_description}",
+                        "summary": summary,
+                        "summary_text": summary_text,
                         "items": records,
                         "total": total,
                         "current": current,
@@ -805,7 +863,7 @@ async def pp_ai_query(
                     "message": f"统计完成：共有 {total} 个{status_text}的订单"
                 }
             
-            # 否则返回列表数据
+            # 否则返回列表数据（也包含总结）
             message = "查询报工一览表成功"
             if is_unreported_query:
                 message = "查询未报工列表成功"
@@ -814,11 +872,17 @@ async def pp_ai_query(
             elif is_partial_reported_query:
                 message = "查询部分报工列表成功"
             
+            # 生成总结描述
+            summary_text = f"共 {summary['total_count']} 条记录，其中：已报工 {summary['reported_count']} 条，未报工 {summary['unreported_count']} 条，部分报工 {summary['partial_reported_count']} 条。"
+            summary_text += f"总目标数量：{summary['total_mgvrg']}，总确认数量：{summary['total_lmnga']}，总报废数量：{summary['total_xmnga']}，完成率：{summary['completion_rate']}%。"
+            
             return {
                 "success": True,
                 "intent": intent,
                 "data": {
                     "type": "work_report_list",
+                    "summary": summary,
+                    "summary_text": summary_text,
                     "items": records,
                     "total": total,
                     "current": current,

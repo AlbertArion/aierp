@@ -808,8 +808,50 @@ async def pp_ai_query(
                     "completion_rate": round(completion_rate, 2)
                 }
             
-            # 计算总结（基于当前页的数据，如果是统计查询则基于全部数据）
-            summary = calculate_work_report_summary(records)
+            # 为了计算准确的统计信息，需要获取全部数据（不带分页）
+            # 但为了性能，我们可以基于当前查询条件获取一个较大的数据集来计算统计
+            # 或者基于当前页数据计算（如果数据量不大）
+            
+            # 如果查询条件包含物料号，需要基于全部数据计算统计
+            # 否则基于当前页数据计算
+            all_records_for_summary = records
+            if matnr or aufnr or vornr:
+                # 有查询条件时，获取全部数据来计算统计（使用较大的size）
+                summary_params = params.copy()
+                summary_params["size"] = 10000  # 获取足够多的数据来计算统计
+                summary_params["current"] = 1
+                
+                try:
+                    if is_reported_query:
+                        summary_result = await pp_service.get_reported_work_list(summary_params)
+                    else:
+                        summary_result = await pp_service.get_work_report_list(summary_params)
+                    
+                    if summary_result and isinstance(summary_result, dict):
+                        summary_page_data = summary_result.get("data", {})
+                        if isinstance(summary_page_data, dict):
+                            all_records_for_summary = summary_page_data.get("records", [])
+                            
+                            # 如果是部分报工查询，需要过滤
+                            if is_partial_reported_query:
+                                filtered_all_records = []
+                                for record in all_records_for_summary:
+                                    lmnga = record.get('lmnga', 0) or 0
+                                    mgvrg = record.get('mgvrg', 0) or 0
+                                    try:
+                                        lmnga_num = float(lmnga) if lmnga != '' and lmnga is not None else 0
+                                        mgvrg_num = float(mgvrg) if mgvrg != '' and mgvrg is not None else 0
+                                        if lmnga_num > 0.001 and lmnga_num < mgvrg_num - 0.001:
+                                            filtered_all_records.append(record)
+                                    except (ValueError, TypeError):
+                                        continue
+                                all_records_for_summary = filtered_all_records
+                except Exception as e:
+                    logger.warning(f"获取全部数据计算统计失败，使用当前页数据: {e}")
+                    all_records_for_summary = records
+            
+            # 计算总结（基于全部数据或当前页数据）
+            summary = calculate_work_report_summary(all_records_for_summary)
             
             # 如果是统计查询，返回统计结果和列表
             if is_statistics_query:
@@ -864,13 +906,21 @@ async def pp_ai_query(
                 }
             
             # 否则返回列表数据（也包含总结）
-            message = "查询报工一览表成功"
-            if is_unreported_query:
-                message = "查询未报工列表成功"
-            elif is_reported_query:
-                message = "查询已报工列表成功"
-            elif is_partial_reported_query:
-                message = "查询部分报工列表成功"
+            # 生成消息，包含已报工和未报工的条数统计
+            if matnr or aufnr or vornr:
+                # 有查询条件时，在消息中显示统计信息
+                message = f"共找到 {total} 条记录，其中：已报工 {summary['reported_count']} 条，未报工 {summary['unreported_count']} 条"
+                if summary['partial_reported_count'] > 0:
+                    message += f"，部分报工 {summary['partial_reported_count']} 条"
+                message += "。"
+            else:
+                message = "查询报工一览表成功"
+                if is_unreported_query:
+                    message = "查询未报工列表成功"
+                elif is_reported_query:
+                    message = "查询已报工列表成功"
+                elif is_partial_reported_query:
+                    message = "查询部分报工列表成功"
             
             # 生成总结描述
             summary_text = f"共 {summary['total_count']} 条记录，其中：已报工 {summary['reported_count']} 条，未报工 {summary['unreported_count']} 条，部分报工 {summary['partial_reported_count']} 条。"

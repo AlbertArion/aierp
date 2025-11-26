@@ -990,7 +990,7 @@ async def pp_ai_query(
             is_remove = any(kw in query_lower for kw in ["移除", "隐藏", "不要显示", "去掉", "删除", "不显示"])
             
             # 检查是否是"添加"模式
-            is_add = any(kw in query_lower for kw in ["增加", "添加", "显示", "展示", "包含"])
+            is_add = any(kw in query_lower for kw in ["增加", "添加", "新增", "显示", "展示", "包含", "后面", "后方", "之后"])
             
             # 确定action
             if is_show_only:

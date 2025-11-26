@@ -1130,7 +1130,8 @@ async def adjust_columns(
                         fields_to_add.append(default_col.get("label", field))
             
             # 检查用户消息中是否提到了工序控制码
-            if "工序控制码" in user_message or "控制码" in user_message or "steus" in user_message.lower():
+            user_message_lower = user_message.lower()
+            if "工序控制码" in user_message or "控制码" in user_message or "steus" in user_message_lower or "STEUS" in user_message:
                 existing_steus = next((col for col in result_columns if col.get("field") == "steus"), None)
                 ltxa1_index = next((i for i, col in enumerate(result_columns) if col.get("field") == "ltxa1"), -1)
                 

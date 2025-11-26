@@ -254,6 +254,22 @@ class PPService:
         
         return await self._request("GET", "/sinocst-module-pp/workReport/list", params=params)
     
+    async def get_reported_work_list(self, params: Optional[Dict] = None) -> Dict[str, Any]:
+        """
+        查询已报工情况列表（确认数量=目标数量）
+        
+        Args:
+            params: 查询参数（工厂、订单号、物料号等）
+        
+        Returns:
+            已报工情况列表数据
+        """
+        # 如果参数中有aufnr，规范化订单号
+        if params and "aufnr" in params:
+            params["aufnr"] = self._normalize_aufnr(params["aufnr"])
+        
+        return await self._request("GET", "/sinocst-module-pp/workReport/reported", params=params)
+    
     async def month_end_check(self, params: Optional[Dict] = None) -> Dict[str, Any]:
         """
         月结异常检测

@@ -472,9 +472,13 @@ async def pp_ai_query(
             ])
             
             # 提取查询参数
+            # 对于统计查询，需要先获取总数，然后获取第一页数据用于显示
+            page_size = payload.get("size", 10)
+            page_current = payload.get("current", 1)
+            
             params = {
-                "current": payload.get("current", 1),
-                "size": payload.get("size", 100) if is_statistics_query else payload.get("size", 10)  # 统计查询获取更多数据
+                "current": page_current,
+                "size": page_size  # 统计查询也使用正常分页，先显示第一页
             }
             aufnr = extracted.get("aufnr") or _extract_order_number(query)
             if aufnr:
@@ -517,22 +521,40 @@ async def pp_ai_query(
                         }
                     }
             
+            # 调试：打印完整的响应结构
+            logger.info(f"未报工查询原始响应：{json.dumps(result, ensure_ascii=False, indent=2, default=str)[:2000]}")
+            
             # IPage对象包含records字段，需要转换为items
+            # Java后端返回格式：{"code": 200, "data": {"records": [...], "total": xxx, ...}, "msg": "success"}
             page_data = result.get("data") if isinstance(result, dict) else {}
             if page_data is None:
                 page_data = {}
             
+            # 检查page_data的实际类型和内容
+            logger.info(f"page_data类型：{type(page_data)}, page_data keys：{page_data.keys() if isinstance(page_data, dict) else 'not a dict'}")
+            
+            # MyBatis Plus的IPage对象直接包含total和records字段
             total = page_data.get("total", 0) if isinstance(page_data, dict) else 0
             records = page_data.get("records", []) if isinstance(page_data, dict) else []
             
+            # 如果records为空但total>0，尝试其他可能的数据结构
+            if not records and total > 0:
+                # 检查是否是直接返回的IPage对象（可能在某些情况下）
+                if isinstance(result, dict) and "records" in result:
+                    records = result.get("records", [])
+                    total = result.get("total", total)
+                    logger.info(f"从result根级别获取records，数量：{len(records)}")
+            
+            # 调试日志
+            logger.info(f"未报工查询结果：total={total}, records数量={len(records)}, page_data类型={type(page_data)}")
+            if records and len(records) > 0:
+                logger.info(f"第一条记录示例：{records[0] if isinstance(records, list) else 'not a list'}")
+            else:
+                logger.warning(f"records为空或不是列表，page_data完整内容：{json.dumps(page_data, ensure_ascii=False, default=str)[:1000] if isinstance(page_data, dict) else str(page_data)[:500]}")
+            
             # 如果是统计查询，返回统计结果和列表
             if is_statistics_query:
-                # 应用分页
-                page_size = payload.get("size", 10)
-                page_current = payload.get("current", 1)
-                start_idx = (page_current - 1) * page_size
-                end_idx = start_idx + page_size
-                paginated_records = records[start_idx:end_idx]
+                # 计算总页数
                 pages = (total + page_size - 1) // page_size if total > 0 else 0
                 
                 # 获取默认列配置（与 work_report_list 保持一致）
@@ -553,9 +575,11 @@ async def pp_ai_query(
                 ]
                 
                 # 确保每条记录都包含steus字段
-                for record in paginated_records:
+                for record in records:
                     if 'steus' not in record:
                         record['steus'] = record.get('steus', '')
+                
+                logger.info(f"未报工统计查询：总数={total}, 当前页={page_current}, 每页={page_size}, 记录数={len(records)}")
                 
                 return {
                     "success": True,
@@ -564,12 +588,12 @@ async def pp_ai_query(
                         "type": "statistics_with_list",
                         "count": total,
                         "description": f"未报工的订单数量为 {total} 个。未报工是指已确认数量为0的生产订单工序。",
-                        "items": paginated_records,
+                        "items": records,
                         "total": total,
                         "current": page_current,
                         "size": page_size,
                         "pages": pages,
-                        "column_config": page_data.get("column_config") if isinstance(page_data, dict) and page_data.get("column_config") else default_columns
+                        "column_config": default_columns
                     },
                     "message": f"统计完成：共有 {total} 个未报工的订单"
                 }
@@ -610,11 +634,9 @@ async def pp_ai_query(
             ])
             
             # 提取分页参数
-            # 对于需要过滤的查询，获取更多数据用于准确过滤
-            need_filter = is_unreported_query or is_reported_query or is_partial_reported_query
             params = {
                 "current": payload.get("current", 1),
-                "size": payload.get("size", 100) if (need_filter or is_statistics_query) else payload.get("size", 10)
+                "size": payload.get("size", 10) if is_statistics_query else payload.get("size", 10)
             }
             aufnr = extracted.get("aufnr") or _extract_order_number(query)
             if aufnr:
@@ -624,7 +646,12 @@ async def pp_ai_query(
                 # 后端接口使用plnbez作为物料号参数
                 params["plnbez"] = matnr
             
-            result = await pp_service.get_work_report_list(params)
+            # 如果查询已报工，直接调用已报工接口（在后端SQL中过滤，效率更高）
+            if is_reported_query:
+                result = await pp_service.get_reported_work_list(params)
+            else:
+                # 未报工和部分报工仍然需要在前端过滤，因为需要复杂的逻辑
+                result = await pp_service.get_work_report_list(params)
             
             # 检查result是否为None或不是字典
             if result is None:
@@ -659,39 +686,14 @@ async def pp_ai_query(
             records = page_data.get("records", []) if isinstance(page_data, dict) else []
             
             # 根据查询类型过滤记录
+            # 注意：已报工和未报工查询已经在后端SQL中完成过滤，不需要前端过滤
             filter_description = ""
-            if is_unreported_query:
-                # 未报工：已确认数量=0
-                filtered_records = []
-                for record in records:
-                    lmnga = record.get('lmnga', 0) or 0
-                    try:
-                        lmnga_num = float(lmnga) if lmnga != '' and lmnga is not None else 0
-                        if abs(lmnga_num) < 0.001:
-                            filtered_records.append(record)
-                    except (ValueError, TypeError):
-                        continue
-                records = filtered_records
-                total = len(filtered_records)
-                filter_description = "未报工是指已确认数量为0的生产订单工序。"
-                
-            elif is_reported_query:
-                # 已报工：已确认数量=目标数量 且 目标数量>0
-                filtered_records = []
-                for record in records:
-                    lmnga = record.get('lmnga', 0) or 0
-                    mgvrg = record.get('mgvrg', 0) or 0
-                    try:
-                        lmnga_num = float(lmnga) if lmnga != '' and lmnga is not None else 0
-                        mgvrg_num = float(mgvrg) if mgvrg != '' and mgvrg is not None else 0
-                        if abs(lmnga_num - mgvrg_num) < 0.001 and mgvrg_num > 0:
-                            filtered_records.append(record)
-                    except (ValueError, TypeError):
-                        continue
-                records = filtered_records
-                total = len(filtered_records)
+            if is_reported_query:
+                # 已报工查询已经在后端SQL中过滤（selectReportedWorkPage），不需要再次过滤
                 filter_description = "已报工是指已确认数量等于目标数量的生产订单工序。"
-                
+            elif is_unreported_query:
+                # 未报工查询已经在后端SQL中过滤（selectUnreportedWorkPage），不需要再次过滤
+                filter_description = "未报工是指已确认数量为0的生产订单工序。"
             elif is_partial_reported_query:
                 # 部分报工：已确认数量>0 且 < 目标数量
                 filtered_records = []
@@ -709,8 +711,8 @@ async def pp_ai_query(
                 total = len(filtered_records)
                 filter_description = "部分报工是指已确认数量大于0但小于目标数量的生产订单工序。"
             
-            # 应用分页（如果需要过滤，已经过滤过了）
-            if need_filter or is_statistics_query:
+            # 应用分页（如果需要过滤，已经过滤过了；已报工和未报工查询在后端已完成分页）
+            if is_partial_reported_query:
                 page_size = payload.get("size", 10)
                 page_current = payload.get("current", 1)
                 start_idx = (page_current - 1) * page_size

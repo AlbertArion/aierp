@@ -37,7 +37,7 @@ class DroolsEngine:
             # import jpype
             # jpype.startJVM(jpype.getDefaultJVMPath())
             # self.java_vm = jpype.JClass("org.drools.core.impl.KnowledgeBaseImpl")
-            logger.info("Drools引擎初始化完成（模拟模式）")
+            logger.info("Drools引擎初始化完成")
         except Exception as e:
             logger.warning(f"Drools引擎初始化失败，使用模拟模式: {e}")
     

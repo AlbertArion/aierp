@@ -140,7 +140,8 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 5. MONTH_END_CHECK - 月结异常检测（月结、异常检测等）
 6. ORDER_STATUS_MONITOR - 订单状态监控（订单状态、进度、延迟等）
 7. ADJUST_COLUMNS - 字段调整（移除字段、显示字段等）
-8. SMALLTALK - 闲聊或询问如何使用
+8. GENERATE_ABAP_CODE - 生成ABAP代码（生成、abap、代码等）
+9. SMALLTALK - 闲聊或询问如何使用
 
 请以JSON格式返回结果，格式如下：
 {
@@ -300,8 +301,173 @@ def _identify_intent(text: str) -> str:
     if any(keyword in text_lower for keyword in ["订单状态", "完成进度", "延迟", "进度"]):
         return "ORDER_STATUS_MONITOR"
     
+    # ABAP代码生成意图
+    if any(keyword in text_lower for keyword in ["生成abap", "生成abap代码", "生成代码", "abap代码", "生成查询", "根据需求生成"]):
+        return "GENERATE_ABAP_CODE"
+    
     # 默认：闲聊
     return "SMALLTALK"
+
+async def _generate_abap_code(query: str, tables: list = None, conditions: list = None, fields: list = None) -> Dict[str, Any]:
+    """
+    根据业务需求生成ABAP代码
+    
+    Args:
+        query: 用户查询文本
+        tables: 标准表列表（可选，从查询中提取）
+        conditions: 查询条件列表（可选，从查询中提取）
+        fields: 显示字段列表（可选，从查询中提取）
+        
+    Returns:
+        包含生成的ABAP代码的响应
+    """
+    # 检查是否启用LLM
+    use_llm = os.getenv("USE_LLM_PP_AGENT", "true").lower() == "true"
+    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
+    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    openai_model = os.getenv("PP_AGENT_LLM_MODEL", "qwen-max-latest")
+    
+    if not use_llm or not openai_api_key or not openai_base_url:
+        return {
+            "success": False,
+            "message": "LLM服务未配置，无法生成ABAP代码"
+        }
+    
+    try:
+        # 构建系统提示词
+        system_prompt = """你是一个SAP ABAP开发专家。请根据用户提供的业务需求、标准表、查询条件和显示字段，生成标准的ABAP代码。
+
+要求：
+1. 生成完整的ABAP报表程序代码
+2. 使用标准的SAP表结构
+3. 包含SELECT语句、内表定义、循环处理等
+4. 代码要规范、可执行
+5. 包含必要的注释说明
+6. 使用标准的ABAP语法
+
+代码结构应该包括：
+- REPORT声明
+- TABLES声明
+- DATA声明（内表和工作区）
+- SELECT-OPTIONS（查询条件）
+- SELECT语句（数据查询）
+- LOOP处理（数据循环）
+- WRITE输出（显示字段）
+
+请直接返回ABAP代码，不要包含markdown代码块标记。"""
+
+        # 构建用户提示词
+        user_prompt = f"""请根据以下业务需求生成ABAP代码：
+
+用户需求：{query}
+"""
+        
+        # 如果用户输入中包含了详细的需求描述（如报工一览表-ZCOOIS），尝试提取更多信息
+        query_lower = query.lower()
+        
+        # 提取标准表信息
+        if tables:
+            user_prompt += f"\n标准表：{', '.join(tables)}"
+        else:
+            # 尝试从查询中提取表名
+            extracted_tables = []
+            sap_table_keywords = {
+                "报工": ["AUFK", "JEST", "AFVC", "MAKT", "AFKO", "AFVV"],
+                "订单": ["AUFK", "AFKO", "AFPO", "JEST"],
+                "物料": ["MAKT", "MARA"],
+                "采购": ["EKKO", "EKPO", "EKBE", "EKKN"],
+                "用户": ["AGR_HIER", "AGR_DEFINE", "AGR_USERS", "USER_ADDRS"]
+            }
+            for keyword, table_list in sap_table_keywords.items():
+                if keyword in query:
+                    extracted_tables.extend(table_list)
+            if extracted_tables:
+                user_prompt += f"\n标准表：{', '.join(list(set(extracted_tables)))}"
+        
+        # 提取查询条件
+        if conditions:
+            user_prompt += f"\n查询条件：{', '.join(conditions)}"
+        else:
+            # 尝试从查询中提取条件
+            extracted_conditions = []
+            condition_keywords = ["工厂", "生产订单号", "预留单号", "需求日期", "移动类型", "物料号", "用户名", "事务码", "角色"]
+            for keyword in condition_keywords:
+                if keyword in query:
+                    extracted_conditions.append(keyword)
+            if extracted_conditions:
+                user_prompt += f"\n查询条件：{', '.join(extracted_conditions)}"
+        
+        # 提取显示字段
+        if fields:
+            user_prompt += f"\n显示字段：{', '.join(fields)}"
+        else:
+            # 尝试从查询中提取字段
+            extracted_fields = []
+            field_keywords = ["生产订单号", "物料号", "物料描述", "订单类型", "工厂", "工序", "目标数量", "已确认数量", "报废数量", "差异数量", "基本计量单位"]
+            for keyword in field_keywords:
+                if keyword in query:
+                    extracted_fields.append(keyword)
+            if extracted_fields:
+                user_prompt += f"\n显示字段：{', '.join(extracted_fields)}"
+        
+        user_prompt += "\n\n请生成完整的ABAP报表程序代码，包括：\n1. REPORT声明\n2. TABLES声明（根据标准表）\n3. DATA声明（内表和工作区）\n4. SELECT-OPTIONS（查询条件）\n5. SELECT语句（数据查询，包含表关联）\n6. LOOP处理（数据循环）\n7. WRITE输出（显示字段）\n8. 必要的注释说明"
+        
+        logger.info(f"开始生成ABAP代码，查询：{query}")
+        
+        resp = requests.post(
+            f"{openai_base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openai_api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": openai_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.1,  # 降低温度以提高代码准确性
+                "max_tokens": 3000  # ABAP代码可能较长
+            },
+            timeout=180  # 增加超时时间到180秒，因为生成ABAP代码可能需要较长时间
+        )
+        
+        resp.raise_for_status()
+        data = resp.json()
+        abap_code = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        
+        # 清理代码（去掉markdown代码块标记）
+        if abap_code:
+            # 去掉开头的 ```abap 或 ```
+            abap_code = re.sub(r'^```(?:abap)?\s*\n?', '', abap_code, flags=re.IGNORECASE)
+            # 去掉结尾的 ```
+            abap_code = re.sub(r'\n?```\s*$', '', abap_code)
+            abap_code = abap_code.strip()
+        
+        if abap_code:
+            logger.info(f"ABAP代码生成成功，长度: {len(abap_code)}")
+            return {
+                "success": True,
+                "abap_code": abap_code,
+                "message": "ABAP代码生成成功"
+            }
+        else:
+            logger.warning("LLM返回空代码")
+            return {
+                "success": False,
+                "message": "ABAP代码生成失败：LLM返回空内容"
+            }
+            
+    except Exception as e:
+        logger.error(f"生成ABAP代码失败: {e}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"ABAP代码生成失败: {str(e)}"
+        }
 
 async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str, Any]:
     """
@@ -1042,6 +1208,55 @@ async def pp_ai_query(
                 },
                 "message": "字段调整指令已识别"
             }
+        
+        elif intent == "GENERATE_ABAP_CODE":
+            # ABAP代码生成
+            # 从查询中提取表、条件、字段信息（如果用户提供了）
+            tables = []
+            conditions = []
+            fields = []
+            
+            # 尝试从查询中提取信息
+            query_lower = query.lower()
+            
+            # 提取表名（常见SAP表）
+            sap_tables = ["AUFK", "JEST", "AFVC", "MAKT", "AFKO", "AFPO", "AFVV", "EKKO", "EKPO", "EKBE", "EKKN", "MARA", "AGR_HIER", "AGR_DEFINE", "AGR_USERS", "USER_ADDRS"]
+            for table in sap_tables:
+                if table.lower() in query_lower:
+                    tables.append(table)
+            
+            # 提取查询条件关键词
+            condition_keywords = ["工厂", "生产订单号", "预留单号", "需求日期", "移动类型", "物料号", "用户名", "事务码", "角色", "研发内部订单号", "采购订单号"]
+            for keyword in condition_keywords:
+                if keyword in query:
+                    conditions.append(keyword)
+            
+            # 提取显示字段关键词
+            field_keywords = ["生产订单号", "物料号", "物料描述", "订单类型", "工厂", "工序", "目标数量", "已确认数量", "报废数量", "差异数量", "基本计量单位", "用户名", "用户中文名", "角色名", "角色描述", "报表类型", "事务码", "事务码描述"]
+            for keyword in field_keywords:
+                if keyword in query:
+                    fields.append(keyword)
+            
+            # 调用生成函数
+            result = await _generate_abap_code(query, tables if tables else None, conditions if conditions else None, fields if fields else None)
+            
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "abap_code",
+                        "code": result.get("abap_code", ""),
+                        "query": query
+                    },
+                    "message": result.get("message", "ABAP代码生成成功")
+                }
+            else:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": result.get("message", "ABAP代码生成失败")
+                }
         
         elif intent.startswith("NAVIGATE_"):
             # 页面跳转

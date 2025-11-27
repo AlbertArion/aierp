@@ -21,7 +21,7 @@ const getApiBaseUrl = () => {
 // 创建axios实例
 const apiClient = axios.create({
   baseURL: getApiBaseUrl(),
-  timeout: 30000 // 增加超时时间到30秒
+  timeout: 180000 // 增加超时时间到180秒，因为生成ABAP代码等操作可能需要较长时间
 })
 
 // 请求拦截器

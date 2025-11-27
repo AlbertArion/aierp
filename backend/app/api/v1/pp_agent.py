@@ -5,12 +5,15 @@ PP Agent AI查询接口
 支持自然语言查询生产订单、报工情况、月结异常检测等功能
 """
 from fastapi import APIRouter, Depends, HTTPException, Header
-from typing import Dict, Any, Optional
+from fastapi.responses import StreamingResponse
+from typing import Dict, Any, Optional, AsyncGenerator
 import re
 import logging
 import os
 import json
-import requests
+import httpx
+import requests  # 保留requests用于非流式请求
+import asyncio
 from app.services.pp_service import PPService
 
 logger = logging.getLogger(__name__)
@@ -245,13 +248,19 @@ def _identify_intent(text: str) -> str:
     """
     text_lower = text.lower()
     
+    # ABAP代码生成意图 - 优先检查，避免被其他规则误识别
+    if any(keyword in text_lower for keyword in ["生成abap", "生成abap代码", "生成代码", "abap代码", "生成查询", "根据需求生成", "根据如下需求", "生成查询xxx"]):
+        return "GENERATE_ABAP_CODE"
+    
     # 字段调整意图（核心创新功能）
     if any(keyword in text_lower for keyword in ["移除", "隐藏", "不要显示", "去掉", "删除", "不显示"]):
         if any(keyword in text_lower for keyword in ["字段", "列", "单位", "类型", "工厂", "工序", "描述"]):
             return "ADJUST_COLUMNS"
     if any(keyword in text_lower for keyword in ["增加", "添加", "显示", "展示", "包含"]):
         if any(keyword in text_lower for keyword in ["字段", "列", "单位", "类型", "工厂", "工序", "描述"]):
-            return "ADJUST_COLUMNS"
+            # 排除"显示字段"在生成代码场景中的情况
+            if not any(keyword in text_lower for keyword in ["生成", "abap", "代码", "查询xxx"]):
+                return "ADJUST_COLUMNS"
     if any(keyword in text_lower for keyword in ["恢复默认", "显示所有", "重置字段"]):
         return "ADJUST_COLUMNS"
     
@@ -301,10 +310,6 @@ def _identify_intent(text: str) -> str:
     if any(keyword in text_lower for keyword in ["订单状态", "完成进度", "延迟", "进度"]):
         return "ORDER_STATUS_MONITOR"
     
-    # ABAP代码生成意图
-    if any(keyword in text_lower for keyword in ["生成abap", "生成abap代码", "生成代码", "abap代码", "生成查询", "根据需求生成"]):
-        return "GENERATE_ABAP_CODE"
-    
     # 默认：闲聊
     return "SMALLTALK"
 
@@ -348,11 +353,26 @@ async def _generate_abap_code(query: str, tables: list = None, conditions: list 
 代码结构应该包括：
 - REPORT声明
 - TABLES声明
-- DATA声明（内表和工作区）
+- TYPES声明（如果使用自定义结构，必须先定义结构类型）
+- DATA声明（内表和工作区，包括ALV相关的结构）
 - SELECT-OPTIONS（查询条件）
 - SELECT语句（数据查询）
-- LOOP处理（数据循环）
-- WRITE输出（显示字段）
+- LOOP处理（数据循环，填充ALV内表）
+- ALV显示（使用REUSE_ALV_GRID_DISPLAY，支持Excel导出）
+
+重要：自定义结构定义
+- 如果代码中使用了自定义结构（如TYPE TABLE OF zcoois_output），必须在使用之前定义该结构
+- 使用TYPES语句定义结构类型，包含所有显示字段
+- 结构定义应该在DATA声明之前
+- 结构字段应该根据显示字段需求定义，包括字段名和数据类型
+- 例如：如果显示字段包括"生产订单号、物料号、物料描述"等，则结构应该包含对应的字段（如aufnr、matnr、maktx等）
+
+ALV要求：
+- 必须使用ALV方式显示数据，不要使用WRITE语句
+- 优先使用REUSE_ALV_GRID_DISPLAY（网格显示，支持Excel导出）
+- 定义FIELDCATALOG来指定显示字段的属性（字段名、描述、对齐方式等）
+- 使用LAYOUT结构设置ALV显示样式
+- 支持Excel导出功能（ALV默认支持）
 
 请直接返回ABAP代码，不要包含markdown代码块标记。"""
 
@@ -410,7 +430,7 @@ async def _generate_abap_code(query: str, tables: list = None, conditions: list 
             if extracted_fields:
                 user_prompt += f"\n显示字段：{', '.join(extracted_fields)}"
         
-        user_prompt += "\n\n请生成完整的ABAP报表程序代码，包括：\n1. REPORT声明\n2. TABLES声明（根据标准表）\n3. DATA声明（内表和工作区）\n4. SELECT-OPTIONS（查询条件）\n5. SELECT语句（数据查询，包含表关联）\n6. LOOP处理（数据循环）\n7. WRITE输出（显示字段）\n8. 必要的注释说明"
+        user_prompt += "\n\n请生成完整的ABAP报表程序代码，包括：\n1. REPORT声明\n2. TABLES声明（根据标准表）\n3. TYPES声明（如果使用自定义结构，必须先定义结构类型，包含所有显示字段）\n4. DATA声明（内表和工作区，包括ALV相关的结构：FIELDCATALOG、LAYOUT等）\n5. SELECT-OPTIONS（查询条件）\n6. SELECT语句（数据查询，包含表关联）\n7. LOOP处理（数据循环，填充ALV内表）\n8. ALV显示（使用REUSE_ALV_GRID_DISPLAY，支持Excel导出）\n9. 必要的注释说明\n\n重要要求：\n1. 必须使用ALV方式显示，不要使用WRITE语句。需要定义FIELDCATALOG来指定显示字段的属性（字段名、描述、对齐方式等）。\n2. 如果代码中使用了自定义结构（如TYPE TABLE OF zcoois_output），必须在使用之前使用TYPES语句定义该结构，包含所有需要的字段。结构定义应该在DATA声明之前。\n3. 确保生成的代码可以直接运行，所有使用的结构都必须有定义。"
         
         logger.info(f"开始生成ABAP代码，查询：{query}")
         
@@ -469,6 +489,232 @@ async def _generate_abap_code(query: str, tables: list = None, conditions: list 
             "message": f"ABAP代码生成失败: {str(e)}"
         }
 
+async def _generate_abap_code_stream(
+    query: str,
+    tables: Optional[list] = None,
+    conditions: Optional[list] = None,
+    fields: Optional[list] = None
+) -> AsyncGenerator[str, None]:
+    """
+    流式生成ABAP代码
+    
+    Args:
+        query: 用户查询
+        tables: 标准表列表
+        conditions: 查询条件列表
+        fields: 显示字段列表
+        
+    Yields:
+        SSE格式的数据块
+    """
+    try:
+        # 检查是否启用LLM
+        use_llm = os.getenv("USE_LLM_PP_AGENT", "true").lower() == "true"
+        openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
+        openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        openai_model = os.getenv("PP_AGENT_LLM_MODEL", "qwen-max-latest")
+        
+        if not use_llm or not openai_api_key or not openai_base_url:
+            yield f"data: {json.dumps({'error': 'LLM服务未配置'}, ensure_ascii=False)}\n\n"
+            return
+        
+        # 构建系统提示词（与_generate_abap_code相同）
+        system_prompt = """你是一个专业的ABAP开发专家，擅长根据业务需求生成标准的ABAP报表程序代码。
+
+你的任务是：
+1. 根据用户提供的业务需求，生成完整的、可运行的ABAP报表程序
+2. 使用SAP标准表和标准字段
+3. 遵循ABAP编程规范和最佳实践
+4. 代码要清晰、易读，包含必要的注释
+
+ABAP报表程序的标准结构包括：
+- REPORT声明
+- TABLES声明
+- TYPES声明（如果使用自定义结构，必须先定义结构类型）
+- DATA声明（内表和工作区，包括ALV相关的结构）
+- SELECT-OPTIONS（查询条件）
+- SELECT语句（数据查询）
+- LOOP处理（数据循环，填充ALV内表）
+- ALV显示（使用REUSE_ALV_GRID_DISPLAY，支持Excel导出）
+
+重要：自定义结构定义
+- 如果代码中使用了自定义结构（如TYPE TABLE OF zcoois_output），必须在使用之前定义该结构
+- 使用TYPES语句定义结构类型，包含所有显示字段
+- 结构定义应该在DATA声明之前
+- 结构字段应该根据显示字段需求定义，包括字段名和数据类型
+- 例如：如果显示字段包括"生产订单号、物料号、物料描述"等，则结构应该包含对应的字段（如aufnr、matnr、maktx等）
+- 确保所有字段都有正确的数据类型（如CHAR、NUMC、DEC等）
+
+重要要求：
+1. 必须使用ALV方式显示数据，不要使用WRITE语句
+2. 优先使用REUSE_ALV_GRID_DISPLAY（网格显示，支持Excel导出）
+3. 需要定义FIELDCATALOG来指定显示字段的属性（字段名、描述、对齐方式等）
+4. 使用LAYOUT结构设置ALV显示样式
+5. 支持Excel导出功能（ALV默认支持）
+6. 确保生成的代码可以直接运行，所有使用的结构都必须有定义
+
+ALV标准用法：
+- 定义内表结构用于ALV显示
+- 使用REUSE_ALV_FIELDCATALOG_MERGE或手动构建FIELDCATALOG
+- 调用REUSE_ALV_GRID_DISPLAY显示数据
+- 使用LAYOUT结构设置ALV显示样式（如列宽、颜色等）
+
+请直接返回ABAP代码，不要包含markdown代码块标记。"""
+
+        # 构建用户提示词（与_generate_abap_code相同）
+        user_prompt = f"""请根据以下业务需求生成ABAP代码：
+
+用户需求：{query}
+"""
+        
+        query_lower = query.lower()
+        
+        # 提取标准表信息
+        if tables:
+            user_prompt += f"\n标准表：{', '.join(tables)}"
+        else:
+            extracted_tables = []
+            sap_table_keywords = {
+                "报工": ["AUFK", "JEST", "AFVC", "MAKT", "AFKO", "AFVV"],
+                "订单": ["AUFK", "AFKO", "AFPO", "JEST"],
+                "物料": ["MAKT", "MARA"],
+                "采购": ["EKKO", "EKPO", "EKBE", "EKKN"],
+                "用户": ["AGR_HIER", "AGR_DEFINE", "AGR_USERS", "USER_ADDRS"]
+            }
+            for keyword, table_list in sap_table_keywords.items():
+                if keyword in query:
+                    extracted_tables.extend(table_list)
+            if extracted_tables:
+                user_prompt += f"\n标准表：{', '.join(list(set(extracted_tables)))}"
+        
+        # 提取查询条件
+        if conditions:
+            user_prompt += f"\n查询条件：{', '.join(conditions)}"
+        else:
+            extracted_conditions = []
+            condition_keywords = ["工厂", "生产订单号", "预留单号", "需求日期", "移动类型", "物料号", "用户名", "事务码", "角色"]
+            for keyword in condition_keywords:
+                if keyword in query:
+                    extracted_conditions.append(keyword)
+            if extracted_conditions:
+                user_prompt += f"\n查询条件：{', '.join(extracted_conditions)}"
+        
+        # 提取显示字段
+        if fields:
+            user_prompt += f"\n显示字段：{', '.join(fields)}"
+        else:
+            extracted_fields = []
+            field_keywords = ["生产订单号", "物料号", "物料描述", "订单类型", "工厂", "工序", "目标数量", "已确认数量", "报废数量", "差异数量", "基本计量单位"]
+            for keyword in field_keywords:
+                if keyword in query:
+                    extracted_fields.append(keyword)
+            if extracted_fields:
+                user_prompt += f"\n显示字段：{', '.join(extracted_fields)}"
+        
+        user_prompt += "\n\n请生成完整的ABAP报表程序代码，包括：\n1. REPORT声明\n2. TABLES声明（根据标准表）\n3. TYPES声明（如果使用自定义结构，必须先定义结构类型，包含所有显示字段）\n4. DATA声明（内表和工作区，包括ALV相关的结构：FIELDCATALOG、LAYOUT等）\n5. SELECT-OPTIONS（查询条件）\n6. SELECT语句（数据查询，包含表关联）\n7. LOOP处理（数据循环，填充ALV内表）\n8. ALV显示（使用REUSE_ALV_GRID_DISPLAY，支持Excel导出）\n9. 必要的注释说明\n\n重要要求：\n1. 必须使用ALV方式显示，不要使用WRITE语句。需要定义FIELDCATALOG来指定显示字段的属性（字段名、描述、对齐方式等）。\n2. 如果代码中使用了自定义结构（如TYPE TABLE OF zcoois_output），必须在使用之前使用TYPES语句定义该结构，包含所有需要的字段。结构定义应该在DATA声明之前。\n3. 确保生成的代码可以直接运行，所有使用的结构都必须有定义。"
+        
+        logger.info(f"开始流式生成ABAP代码，查询：{query}")
+        
+        # 使用httpx异步流式请求
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                async with client.stream(
+                    'POST',
+                    f"{openai_base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openai_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": openai_model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        "temperature": 0.1,
+                        "max_tokens": 3000,
+                        "stream": True  # 启用流式响应
+                    }
+                ) as response:
+                    response.raise_for_status()
+                    logger.info(f"LLM流式请求已建立，状态码: {response.status_code}")
+                    
+                    accumulated_code = ""
+                    chunk_count = 0
+                    buffer = ""
+                    
+                    # 异步流式读取数据
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            # 将字节解码为字符串
+                            buffer += chunk.decode('utf-8', errors='ignore')
+                            
+                            # 按行分割处理
+                            while '\n' in buffer:
+                                line, buffer = buffer.split('\n', 1)
+                                line = line.strip()
+                                
+                                if not line:
+                                    continue
+                                
+                                try:
+                                    if line.startswith('data: '):
+                                        data_str = line[6:]  # 去掉 'data: ' 前缀
+                                        if data_str.strip() == '[DONE]':
+                                            logger.info("收到流结束标记 [DONE]")
+                                            break
+                                        
+                                        data = json.loads(data_str)
+                                        delta = data.get('choices', [{}])[0].get('delta', {})
+                                        content = delta.get('content', '')
+                                        
+                                        if content:
+                                            chunk_count += 1
+                                            accumulated_code += content
+                                            
+                                            # 每10个chunk记录一次日志
+                                            if chunk_count % 10 == 0:
+                                                logger.info(f"已接收 {chunk_count} 个数据块，累计长度: {len(accumulated_code)}")
+                                            
+                                            # 立即发送SSE格式的数据
+                                            sse_data = f"data: {json.dumps({'content': content}, ensure_ascii=False)}\n\n"
+                                            yield sse_data
+                                except json.JSONDecodeError as e:
+                                    logger.warning(f"解析JSON失败，跳过该行: {e}, 行内容: {line[:100]}")
+                                    continue
+                                except Exception as e:
+                                    logger.error(f"处理流式数据时出错: {e}", exc_info=True)
+                                    continue
+                    
+                    logger.info(f"流式数据接收完成，共 {chunk_count} 个数据块，总长度: {len(accumulated_code)}")
+            
+        except httpx.HTTPError as e:
+            logger.error(f"LLM API请求失败: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': f'LLM API请求失败: {str(e)}'}, ensure_ascii=False)}\n\n"
+            return
+        except Exception as e:
+            logger.error(f"流式生成过程中出错: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': f'流式生成失败: {str(e)}'}, ensure_ascii=False)}\n\n"
+            return
+        
+        # 清理代码（去掉markdown代码块标记）
+        if accumulated_code:
+            # 去掉开头的 ```abap 或 ```
+            accumulated_code = re.sub(r'^```(?:abap)?\s*\n?', '', accumulated_code, flags=re.IGNORECASE)
+            # 去掉结尾的 ```
+            accumulated_code = re.sub(r'\n?```\s*$', '', accumulated_code)
+            accumulated_code = accumulated_code.strip()
+            
+            # 发送最终结果
+            yield f"data: {json.dumps({'done': True, 'full_code': accumulated_code}, ensure_ascii=False)}\n\n"
+            logger.info(f"ABAP代码流式生成成功，长度: {len(accumulated_code)}")
+        else:
+            yield f"data: {json.dumps({'error': 'LLM返回空代码'}, ensure_ascii=False)}\n\n"
+            
+    except Exception as e:
+        logger.error(f"流式生成ABAP代码失败: {e}", exc_info=True)
+        yield f"data: {json.dumps({'error': f'ABAP代码生成失败: {str(e)}'}, ensure_ascii=False)}\n\n"
+
 async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str, Any]:
     """
     处理闲聊或超出能力范围的问题，使用LLM自动回答
@@ -496,6 +742,7 @@ async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str
 3. 查询未报工情况
 4. 月结异常检测
 5. 订单状态监控
+6. 根据需求生成ABAP代码
 
 当用户的问题不在你的能力范围内时，请友好地说明你能做什么，并给出一些示例。
 用简洁、专业、友好的中文回答。不要编造具体的数据或表格。"""
@@ -1211,6 +1458,9 @@ async def pp_ai_query(
         
         elif intent == "GENERATE_ABAP_CODE":
             # ABAP代码生成
+            # 检查是否使用流式响应（默认使用流式，除非明确指定为False）
+            use_stream = payload.get("stream", True)  # 默认使用流式响应
+            
             # 从查询中提取表、条件、字段信息（如果用户提供了）
             tables = []
             conditions = []
@@ -1237,7 +1487,25 @@ async def pp_ai_query(
                 if keyword in query:
                     fields.append(keyword)
             
-            # 调用生成函数
+            # 如果使用流式响应
+            if use_stream:
+                return StreamingResponse(
+                    _generate_abap_code_stream(
+                        query,
+                        tables if tables else None,
+                        conditions if conditions else None,
+                        fields if fields else None
+                    ),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache, no-transform",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",  # 禁用nginx缓冲
+                        "X-Content-Type-Options": "nosniff"
+                    }
+                )
+            
+            # 非流式响应（原有逻辑）
             result = await _generate_abap_code(query, tables if tables else None, conditions if conditions else None, fields if fields else None)
             
             if result.get("success"):

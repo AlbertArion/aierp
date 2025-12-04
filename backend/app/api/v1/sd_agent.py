@@ -102,6 +102,13 @@ def _identify_intent(text: str) -> str:
     if any(keyword in text_lower for keyword in ["订单列表", "所有订单", "查询订单", "订单查询", "显示订单"]):
         return "QUERY_ORDER_LIST"
     
+    # 根据指定订单复制创建新订单（优先级高，需要在订单详情查询之前）
+    if "复制" in text_lower and "订单" in text_lower:
+        # 检查是否提到了具体的订单号
+        order_num = _extract_order_number(text)
+        if order_num:
+            return "COPY_ORDER"
+    
     # 订单详情查询
     order_num = _extract_order_number(text)
     if order_num:
@@ -448,6 +455,134 @@ async def sd_ai_query(
                                 "items": []
                             }
                         }
+        
+        elif intent == "COPY_ORDER":
+            # 根据指定订单复制创建新订单
+            vbeln = _extract_order_number(query)
+            if not vbeln:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": "请提供要复制的订单号，例如：根据订单VB2025000091复制并创建新订单"
+                }
+            
+            try:
+                # 获取源订单详情
+                source_order_result = await sd_service.get_order_detail(vbeln)
+                
+                if source_order_result.get("code") != 200:
+                    error_msg = source_order_result.get("msg", "获取订单详情失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"获取订单{vbeln}详情失败：{error_msg}"
+                    }
+                
+                source_order = source_order_result.get("data")
+                if not source_order:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"订单{vbeln}不存在或无法获取订单信息"
+                    }
+                
+                # 检查源订单是否有行项目
+                if not source_order.get("apList") or len(source_order.get("apList", [])) == 0:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"源订单{vbeln}没有行项目数据，无法复制创建新订单。请选择有行项目的订单进行复制。"
+                    }
+                
+                # 复制订单数据
+                new_order_data = _copy_order_data(source_order, query)
+                
+                # 如果指定了销售办事处关键词，查找并设置销售办事处
+                if "_sales_office_keyword" in new_order_data:
+                    keyword = new_order_data.pop("_sales_office_keyword")
+                    sales_office = await sd_service.get_sales_office_by_name(keyword)
+                    
+                    if sales_office:
+                        new_order_data["vkbur"] = sales_office.get("vkbur")
+                        new_order_data["txnamSdb"] = sales_office.get("txnamSdb") or sales_office.get("vtext", "")
+                        logger.info(f"已设置销售办事处为：{new_order_data['vkbur']} - {new_order_data.get('txnamSdb', '')}")
+                    else:
+                        logger.warning(f"未找到包含'{keyword}'的销售办事处，保持原订单的销售办事处")
+                
+                # 创建新订单
+                create_result = await sd_service.create_sales_order(new_order_data)
+                
+                if create_result.get("code") == 200:
+                    new_vbeln = create_result.get("data")
+                    
+                    if not new_vbeln:
+                        logger.error(f"创建订单成功但未返回订单号，返回结果：{create_result}")
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": "创建订单成功，但未获取到订单号，请稍后查询订单列表确认。"
+                        }
+                    
+                    # 获取新创建的订单详情
+                    try:
+                        new_order_detail = await sd_service.get_order_detail(new_vbeln)
+                        order_data = new_order_detail.get("data") if new_order_detail.get("code") == 200 else None
+                        
+                        if not order_data:
+                            logger.warning(f"订单 {new_vbeln} 创建成功，但获取订单详情失败：{new_order_detail}")
+                            # 即使获取详情失败，也返回订单号
+                            return {
+                                "success": True,
+                                "intent": intent,
+                                "data": {
+                                    "type": "order_created",
+                                    "order": None,
+                                    "message": f"基于订单{vbeln}复制创建新订单成功！新订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
+                                    "vbeln": new_vbeln,
+                                    "source_vbeln": vbeln
+                                }
+                            }
+                        
+                        return {
+                            "success": True,
+                            "intent": intent,
+                            "data": {
+                                "type": "order_created",
+                                "order": order_data,
+                                "message": f"基于订单{vbeln}复制创建新订单成功！新订单号：{new_vbeln}",
+                                "vbeln": new_vbeln,
+                                "source_vbeln": vbeln
+                            }
+                        }
+                    except Exception as e:
+                        logger.error(f"获取订单 {new_vbeln} 详情失败: {str(e)}", exc_info=True)
+                        # 即使获取详情失败，也返回订单号
+                        return {
+                            "success": True,
+                            "intent": intent,
+                            "data": {
+                                "type": "order_created",
+                                "order": None,
+                                "message": f"基于订单{vbeln}复制创建新订单成功！新订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
+                                "vbeln": new_vbeln,
+                                "source_vbeln": vbeln
+                            }
+                        }
+                else:
+                    error_msg = create_result.get("msg", "创建销售订单失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"创建销售订单失败：{error_msg}"
+                    }
+                    
+            except Exception as e:
+                logger.error(f"复制创建销售订单失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": f"复制创建销售订单时出错：{str(e)}"
+                }
         
         elif intent == "CREATE_SALES_ORDER":
             # 创建销售订单（基于昨天的最后一个订单复制）

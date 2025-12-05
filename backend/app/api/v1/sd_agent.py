@@ -260,6 +260,36 @@ async def sd_ai_query(
                         "intent": intent,
                         "message": f"订单 {vbeln} 没有可用的行项目信息，无法进行ATP检查。请确认订单是否已创建行项目数据。"
                     }
+                # 处理"销售订单不存在"的错误 - 先验证订单是否真的不存在
+                if "销售订单不存在" in error_msg or "订单不存在" in error_msg:
+                    # 尝试用其他接口验证订单是否存在
+                    try:
+                        detail_result = await sd_service.get_order_detail(vbeln)
+                        detail_data = detail_result.get("data")
+                        if detail_data:
+                            # 订单存在，但getVbInfoBy查询失败，可能是其他原因
+                            # 检查是否是"已有交货单"的错误
+                            if "已有交货单" in error_msg:
+                                return {
+                                    "success": False,
+                                    "intent": intent,
+                                    "message": f"订单 {vbeln} 已有交货单，无法再次创建交货单或进行ATP检查"
+                                }
+                            # 其他原因，返回更详细的错误
+                            return {
+                                "success": False,
+                                "intent": intent,
+                                "message": f"订单 {vbeln} 存在，但无法获取用于创建交货单的订单信息。可能原因：订单状态异常、缺少必要数据等。错误详情：{error_msg}"
+                            }
+                    except Exception as detail_e:
+                        # 订单详情也查询不到，说明订单确实不存在
+                        detail_error = str(detail_e)
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"订单 {vbeln} 不存在。请确认订单号是否正确，或订单是否已被删除。"
+                        }
+                
                 # 处理其他错误
                 return {
                     "success": False,
@@ -270,6 +300,11 @@ async def sd_ai_query(
             # 如果是创建交货单，直接调用创建接口（内部会进行ATP检查）
             if intent == "CREATE_DELIVERY":
                 try:
+                    # 确保 order_info 中包含 vgbel 字段（销售订单号）
+                    # 如果 vgbel 为空或不存在，使用 vbeln 设置它
+                    if not order_info.get("vgbel"):
+                        order_info["vgbel"] = vbeln
+                    
                     delivery_result = await sd_service.create_delivery(order_info)
                     delivery_vbeln = delivery_result.get("data")
                     
@@ -322,90 +357,18 @@ async def sd_ai_query(
                     atp_result = await sd_service.check_atp_detailed(order_info)
                     
                     if atp_result.get("success"):
-                        # ATP检查通过，尝试创建交货单（但不实际创建，只是验证）
-                        try:
-                            delivery_result = await sd_service.create_delivery(order_info)
-                            delivery_vbeln = delivery_result.get("data")
-                            
-                            # ATP检查通过，返回成功结果（包含详细检查信息）
-                            return {
-                                "success": True,
-                                "intent": intent,
-                                "data": {
-                                    "type": "atp_check",
-                                    "message": f"ATP检查通过：订单 {vbeln} 的物料可用性检查完成，库存充足，可以创建交货单。",
-                                    "vbeln": vbeln,  # 销售订单号
-                                    "delivery_vbeln": delivery_vbeln,  # 如果创建成功，返回交货单号
-                                    "items": atp_result.get("items", [])  # 详细的物料检查结果
-                                }
+                        # ATP检查通过，返回成功结果（包含详细检查信息）
+                        # 不再自动创建交货单，由用户点击按钮手动创建
+                        return {
+                            "success": True,
+                            "intent": intent,
+                            "data": {
+                                "type": "atp_check",
+                                "message": f"ATP检查通过：订单 {vbeln} 的物料可用性检查完成，库存充足，可以创建交货单。",
+                                "vbeln": vbeln,  # 销售订单号
+                                "items": atp_result.get("items", [])  # 详细的物料检查结果
                             }
-                        except Exception as e:
-                            # 即使详细检查通过，创建交货单时也可能失败（如其他业务规则）
-                            error_msg = str(e)
-                            items = atp_result.get("items", [])
-                            
-                            # 检查是否是库存不足的错误
-                            if "库存不足" in error_msg or "可用库存" in error_msg:
-                                # 解析错误消息，提取库存信息
-                                # 格式：物料 M2001 可用库存不足!可用库存:1.000(总库存:55.000,已预留:54.000),需要数量:9.000
-                                matnr_match = re.search(r'物料\s+([A-Z0-9\-]+)', error_msg)
-                                available_qty_match = re.search(r'可用库存[:\s]*([\d.]+)', error_msg)
-                                total_qty_match = re.search(r'总库存[:\s]*([\d.]+)', error_msg)
-                                reserved_qty_match = re.search(r'已预留[:\s]*([\d.]+)', error_msg)
-                                need_qty_match = re.search(r'需要数量[:\s]*([\d.]+)', error_msg)
-                                
-                                if matnr_match:
-                                    matnr = matnr_match.group(1).strip()
-                                    # 更新items中对应物料的状态
-                                    for item in items:
-                                        if item.get("matnr") == matnr:
-                                            # 从错误消息中提取实际库存数据
-                                            if available_qty_match:
-                                                item["available_qty"] = float(available_qty_match.group(1))
-                                            if total_qty_match:
-                                                item["labst"] = float(total_qty_match.group(1))
-                                            if reserved_qty_match:
-                                                item["reserved_qty"] = float(reserved_qty_match.group(1))
-                                            if need_qty_match:
-                                                item["need_qty"] = float(need_qty_match.group(1))
-                                            
-                                            # 重新计算实际可用库存
-                                            item["actual_available_qty"] = item.get("available_qty", 0) - item.get("reserved_qty", 0)
-                                            # 设置为不可用
-                                            item["is_available"] = False
-                                            item["message"] = f"库存不足：需要 {item.get('need_qty', 0)}，实际可用 {item.get('actual_available_qty', 0)}"
-                                            break
-                                
-                                # 库存不足时，应该是ATP检查未通过
-                                # 从错误消息中提取核心错误信息（去掉"ATP检查通过,但创建交货单失败:"前缀）
-                                core_error_msg = error_msg
-                                if "ATP检查通过,但创建交货单失败:" in error_msg:
-                                    core_error_msg = error_msg.split("ATP检查通过,但创建交货单失败:")[-1].strip()
-                                elif "创建交货单失败:" in error_msg:
-                                    core_error_msg = error_msg.split("创建交货单失败:")[-1].strip()
-                                
-                                return {
-                                    "success": False,
-                                    "intent": intent,
-                                    "data": {
-                                        "type": "atp_check_failed",
-                                        "message": f"ATP检查未通过：{core_error_msg}",
-                                        "vbeln": vbeln,  # 销售订单号
-                                        "items": items
-                                    }
-                                }
-                            else:
-                                # 其他错误，保持原消息
-                                return {
-                                    "success": False,
-                                    "intent": intent,
-                                    "data": {
-                                        "type": "atp_check_failed",
-                                        "message": f"ATP检查通过，但创建交货单失败：{error_msg}",
-                                        "vbeln": vbeln,  # 销售订单号
-                                        "items": items
-                                    }
-                                }
+                        }
                     else:
                         # ATP检查失败，返回详细结果
                         return {
@@ -431,18 +394,16 @@ async def sd_ai_query(
                             "intent": intent,
                             "data": {
                                 "type": "atp_check_failed",
-                                "message": f"ATP检查失败：{error_msg}",
+                                "message": error_msg,
                                 "vbeln": vbeln,  # 销售订单号
                                 "solution": solution_info.get("solution", ""),
                                 "action": solution_info.get("action", {}),
                                 "matnr": solution_info.get("matnr"),
                                 "werks": solution_info.get("werks"),
-                                "lgort": solution_info.get("lgort"),
-                                "items": []
+                                "lgort": solution_info.get("lgort")
                             }
                         }
                     else:
-                        # 其他错误，也返回ATP检查失败
                         return {
                             "success": False,
                             "intent": intent,
@@ -451,8 +412,7 @@ async def sd_ai_query(
                                 "message": f"ATP检查失败：{error_msg}",
                                 "vbeln": vbeln,  # 销售订单号
                                 "solution": solution_info.get("solution", ""),
-                                "action": solution_info.get("action", {}),
-                                "items": []
+                                "action": solution_info.get("action", {})
                             }
                         }
         

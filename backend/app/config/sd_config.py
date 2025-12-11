@@ -7,11 +7,16 @@ import base64
 class SDConfig:
     """SD服务配置类"""
     # SD服务基础URL（从环境变量读取）
-    # 选项1：通过网关访问（推荐，支持负载均衡和服务发现）
+    # 选项1：通过网关访问（支持负载均衡和服务发现）
     # BASE_URL = "http://localhost:9015"
-    # 选项2：直接访问SD服务（开发调试，需要SD服务运行在9991端口）
+    # 选项2：直接访问SD服务（开发调试，需要SD服务运行在9991端口，绕过网关）
     # BASE_URL = "http://localhost:9991"
-    BASE_URL = os.getenv("SD_API_BASE_URL", "http://localhost:9015")
+    # 默认直接连接SD服务（绕过网关，更稳定）
+    BASE_URL = os.getenv("SD_API_BASE_URL", "http://localhost:9991")
+    
+    # 强制使用直接访问模式（不通过网关）
+    # 注意：如果环境变量设置了网关地址，这里会覆盖
+    FORCE_DIRECT_ACCESS = os.getenv("SD_FORCE_DIRECT_ACCESS", "true").lower() == "true"
     
     # 请求超时时间（秒）
     TIMEOUT = int(os.getenv("SD_API_TIMEOUT", "30"))

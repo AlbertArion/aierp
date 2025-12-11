@@ -18,6 +18,24 @@ class PPService:
         self.timeout = PPConfig.TIMEOUT
         self.retry_count = PPConfig.RETRY_COUNT
         self.token = None  # 用户token，从请求中获取
+        # 判断是否通过网关访问
+        self.is_gateway = "9015" in self.base_url or "gateway" in self.base_url.lower()
+    
+    def _build_path(self, path: str) -> str:
+        """
+        根据BASE_URL构建正确的路径
+        - 通过网关访问时，路径需要包含服务名称前缀 /sinocst-module-pp/
+        - 直接访问服务时，路径不需要服务名称前缀
+        """
+        if self.is_gateway:
+            return path
+        else:
+            # 直接访问服务，移除服务名称前缀
+            if path.startswith("/sinocst-module-pp/"):
+                return path.replace("/sinocst-module-pp/", "/", 1)
+            elif path.startswith("/sinocst-module-pp"):
+                return path.replace("/sinocst-module-pp", "", 1)
+            return path
     
     def set_token(self, token: str):
         """设置认证token"""
@@ -73,7 +91,9 @@ class PPService:
         Raises:
             Exception: 请求失败时抛出异常
         """
-        url = f"{self.base_url}{path}"
+        # 根据是否通过网关访问调整路径
+        adjusted_path = self._build_path(path)
+        url = f"{self.base_url}{adjusted_path}"
         
         # 获取请求头
         request_headers = PPConfig.get_headers(headers)

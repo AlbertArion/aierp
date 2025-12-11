@@ -18,11 +18,71 @@ class SDService:
         self.timeout = SDConfig.TIMEOUT
         self.retry_count = SDConfig.RETRY_COUNT
         self.token = None  # 用户token，从请求中获取
+        # 判断是否通过网关访问（网关端口通常是9015）
+        self.is_gateway = "9015" in self.base_url or "gateway" in self.base_url.lower()
+        # 网关地址（用于跨服务请求，如访问WM、master-data等）
+        self.gateway_url = "http://localhost:9015"
+        # 其他服务的直接访问地址
+        self.service_urls = {
+            "sinocst-module-wm": "http://localhost:9112",
+            "sinocst-master-data": "http://localhost:9100",
+        }
     
     def set_token(self, token: str):
         """设置认证token"""
         self.token = token
+    
+    def _build_path(self, path: str) -> str:
+        """
+        根据BASE_URL构建正确的路径
+        - 通过网关访问时，路径需要包含服务名称前缀 /sinocst-module-sd/
+        - 直接访问服务时，路径不需要服务名称前缀
+        """
+        if self.is_gateway:
+            # 通过网关访问，确保路径包含服务名称前缀
+            if not path.startswith("/sinocst-module-sd/"):
+                # 如果路径已经以/sinocst-module-sd开头，直接返回
+                # 否则添加服务名称前缀
+                if path.startswith("/sinocst-module-sd"):
+                    return path
+                # 移除开头的斜杠（如果有），然后添加服务名称前缀
+                path = path.lstrip("/")
+                return f"/sinocst-module-sd/{path}"
+            return path
+        else:
+            # 直接访问服务，移除服务名称前缀（如果有）
+            if path.startswith("/sinocst-module-sd/"):
+                return path.replace("/sinocst-module-sd/", "/", 1)
+            elif path.startswith("/sinocst-module-sd"):
+                return path.replace("/sinocst-module-sd", "", 1)
+            return path
         
+    def _get_service_url(self, path: str) -> tuple:
+        """
+        根据请求路径获取正确的服务URL和调整后的路径
+        
+        Args:
+            path: 请求路径
+        
+        Returns:
+            (base_url, adjusted_path) 元组
+        """
+        # 检查是否是跨服务请求（访问其他模块）
+        for service_name, service_url in self.service_urls.items():
+            if path.startswith(f"/{service_name}/"):
+                # 跨服务请求，使用该服务的直接地址
+                # 移除服务名前缀
+                adjusted_path = path.replace(f"/{service_name}/", "/", 1)
+                logger.info(f"跨服务请求: {service_name} -> {service_url}{adjusted_path}")
+                return service_url, adjusted_path
+        
+        # SD模块请求，使用配置的base_url
+        if self.is_gateway:
+            return self.base_url, path
+        else:
+            # 直接访问时，使用_build_path调整路径
+            return self.base_url, self._build_path(path)
+    
     async def _request(
         self, 
         method: str, 
@@ -47,7 +107,9 @@ class SDService:
         Raises:
             Exception: 请求失败时抛出异常
         """
-        url = f"{self.base_url}{path}"
+        # 根据路径获取正确的服务URL
+        base_url, adjusted_path = self._get_service_url(path)
+        url = f"{base_url}{adjusted_path}"
         
         # 获取请求头
         request_headers = SDConfig.get_headers(headers)
@@ -206,7 +268,7 @@ class SDService:
             "size": size,
             **filters
         }
-        # 通过网关访问时，路径需要包含服务名称前缀
+        # 路径会根据BASE_URL自动调整
         return await self._request(
             method="GET",
             path="/sinocst-module-sd/sinocst-vbak/vbak/list",
@@ -223,7 +285,7 @@ class SDService:
         Returns:
             订单详情数据
         """
-        # 通过网关访问时，路径需要包含服务名称前缀
+        # 路径会根据BASE_URL自动调整
         return await self._request(
             method="GET",
             path="/sinocst-module-sd/sinocst-vbak/vbak/getVbDetail",
@@ -240,7 +302,7 @@ class SDService:
         Returns:
             订单信息数据（包含行项目等）
         """
-        # 通过网关访问时，路径需要包含服务名称前缀
+        # 路径会根据BASE_URL自动调整
         # 注意：后端期望的参数名是 vgbel，不是 vbeln
         return await self._request(
             method="GET",

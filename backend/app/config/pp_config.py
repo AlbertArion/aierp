@@ -8,11 +8,11 @@ class PPConfig:
     """PP模块服务配置"""
     
     # PP服务基础URL（从环境变量获取，默认值）
-    # 选项1：通过网关访问（推荐，支持负载均衡和服务发现）
+    # 选项1：通过网关访问（支持负载均衡和服务发现）
     # BASE_URL = "http://localhost:9015"
-    # 选项2：直接访问PP服务（开发调试，需要PP服务运行在对应端口）
-    # BASE_URL = "http://localhost:8080"
-    BASE_URL = os.getenv("PP_SERVICE_BASE_URL", "http://localhost:9015")
+    # 选项2：直接访问PP服务（推荐，绕过网关更稳定）
+    # BASE_URL = "http://localhost:9110"
+    BASE_URL = os.getenv("PP_SERVICE_BASE_URL", "http://localhost:9110")
     
     # 超时时间（秒）
     TIMEOUT = int(os.getenv("PP_SERVICE_TIMEOUT", "30"))

@@ -12,12 +12,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# 依赖注入：创建SDService实例，并传递token
+# 依赖注入：创建SDService实例，并传递token和租户信息
 def get_sd_service(
     authorization: Optional[str] = Header(None, alias="Authorization"),
-    blade_auth: Optional[str] = Header(None, alias="Blade-Auth")
+    blade_auth: Optional[str] = Header(None, alias="Blade-Auth"),
+    x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
 ) -> SDService:
-    """创建SDService实例，并传递认证token"""
+    """创建SDService实例，并传递认证token和租户信息"""
     service = SDService()
     
     # 优先从Authorization头获取token（bearer格式）
@@ -48,6 +50,21 @@ def get_sd_service(
     # 设置token到service
     if token:
         service.set_token(token)
+    
+    # 设置租户信息（mandt和tenantId）到service
+    # 优先使用X-Mandt，如果没有则使用X-Tenant-Id
+    mandt = x_mandt
+    if not mandt or mandt == "null" or mandt.strip() == "":
+        mandt = x_tenant_id
+    
+    if mandt and mandt != "null" and mandt.strip() != "":
+        service.set_mandt(mandt.strip())
+        logger.info(f"设置mandt: {mandt.strip()}")
+    
+    # 同时设置tenantId（如果提供了）
+    if x_tenant_id and x_tenant_id != "null" and x_tenant_id.strip() != "":
+        service.set_tenant_id(x_tenant_id.strip())
+        logger.info(f"设置tenantId: {x_tenant_id.strip()}")
         logger.info(f"Token已设置到SDService (长度: {len(token)})")
         logger.debug(f"Token前20字符: {token[:20]}...")
     else:
@@ -383,6 +400,23 @@ async def sd_ai_query(
                         }
                 except Exception as e:
                     error_msg = str(e)
+                    
+                    # 检查是否是服务连接错误
+                    if "无法连接到" in error_msg or "ConnectError" in error_msg or "连接" in error_msg:
+                        # 判断是哪个服务连接失败
+                        if "sinocst-module-wm" in error_msg or "WM" in error_msg or "仓库" in error_msg:
+                            return {
+                                "success": False,
+                                "intent": intent,
+                                "message": f"无法连接到仓库管理服务（WM服务），无法执行ATP检查。请检查：\n1. WM服务是否已启动（端口9112）\n2. 服务地址配置是否正确\n3. 网络连接是否正常\n\n错误详情：{error_msg}"
+                            }
+                        else:
+                            return {
+                                "success": False,
+                                "intent": intent,
+                                "message": f"无法连接到后端服务，无法执行ATP检查。请检查服务是否正常运行。\n\n错误详情：{error_msg}"
+                            }
+                    
                     # 解析错误信息，提取物料号、工厂、库存地点等信息
                     solution_info = _parse_error_and_get_solution(error_msg, vbeln)
                     

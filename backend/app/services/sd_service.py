@@ -638,4 +638,60 @@ class SDService:
                 return office
         
         return None
+    
+    async def post_delivery(self, vbeln: str) -> Dict[str, Any]:
+        """
+        交货单过账
+        
+        Args:
+            vbeln: 交货单号
+        
+        Returns:
+            过账结果
+        """
+        return await self._request(
+            method="POST",
+            path="/sinocst-master-data/likp/sd/postShipment",
+            json={"vbeln": vbeln}
+        )
+    
+    async def create_invoice_from_delivery(self, delivery_vbeln: str) -> Dict[str, Any]:
+        """
+        从交货单创建发票
+        
+        Args:
+            delivery_vbeln: 交货单号
+        
+        Returns:
+            创建发票结果（包含发票号）
+        """
+        # 先获取交货单详情
+        delivery_detail = await self._request(
+            method="GET",
+            path="/sinocst-master-data/likp/sd/detail",
+            params={"vbeln": delivery_vbeln}
+        )
+        
+        if delivery_detail.get("code") != 200:
+            raise Exception(f"获取交货单详情失败：{delivery_detail.get('msg', '未知错误')}")
+        
+        delivery_data = delivery_detail.get("data")
+        if not delivery_data:
+            raise Exception("交货单不存在或无法获取交货单信息")
+        
+        # 构建创建发票的请求数据
+        invoice_data = {
+            "sourceType": "DELIVERY",
+            "sourceVbelnList": [delivery_vbeln],  # 必须是数组格式
+            "fkdty": "F2",  # 标准开票
+            "fkdat": "",  # 开票日期，由后端自动设置
+            "prsdt": "",  # 定价日期，由后端自动设置
+        }
+        
+        # 调用创建发票接口
+        return await self._request(
+            method="POST",
+            path="/sinocst-module-sd/invoice/create",
+            json=invoice_data
+        )
 

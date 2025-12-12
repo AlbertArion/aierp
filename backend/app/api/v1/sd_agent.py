@@ -6,6 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Header
 from typing import Dict, Any, Optional
 import re
 import logging
+import os
+import json
+import requests
 from app.services.sd_service import SDService
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,21 @@ def get_sd_service(
     
     return service
 
+def _extract_delivery_number(text: str) -> Optional[str]:
+    """
+    从文本中提取交货单号（8位数字，可能以8开头）
+    
+    Returns:
+        交货单号（如 "8000000048"），如果未找到则返回None
+    """
+    import re
+    # 匹配8位数字，可能以8开头
+    pattern = r'\b8\d{7}\b'
+    matches = re.findall(pattern, text)
+    if matches:
+        return matches[0]
+    return None
+
 def _extract_order_number(text: str) -> Optional[str]:
     """
     从文本中提取订单号
@@ -92,6 +110,136 @@ def _extract_order_number(text: str) -> Optional[str]:
                 return order_num
     
     return None
+
+async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
+    """
+    使用LLM识别用户意图（智能解析）
+    
+    Returns:
+        {
+            "intent": "QUERY_ORDER_DETAIL",
+            "confidence": 0.9,
+            "extracted": {"vbeln": "VB2025000059", "delivery_vbeln": None}
+        }
+    """
+    # 检查是否启用LLM
+    use_llm = os.getenv("USE_LLM_SD_AGENT", "true").lower() == "true"
+    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
+    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    openai_model = os.getenv("SD_AGENT_LLM_MODEL", "qwen-max-latest")
+    
+    if not use_llm or not openai_api_key or not openai_base_url:
+        return None
+    
+    try:
+        system_prompt = """你是一个销售与分销(SD)系统的智能助手。请分析用户的查询意图，并提取关键信息。
+
+支持的意图类型：
+1. QUERY_ORDER_LIST - 查询销售订单列表（查询所有订单、订单列表、显示订单等）
+2. QUERY_ORDER_DETAIL - 查询销售订单详情（用户提到订单号、查看订单、订单详情等）
+3. NAVIGATE_ORDER_DETAIL - 跳转到订单详情页面（跳转、打开、进入订单详情等）
+4. NAVIGATE_ORDER_LIST - 跳转到订单列表页面（跳转到订单列表等）
+5. NAVIGATE_ORDER_EDIT - 跳转到订单编辑页面（修改、编辑订单等）
+6. ATP_CHECK - ATP物料可用性检查（atp、可用性、库存检查、物料可用、库存够等）
+7. CREATE_DELIVERY - 创建交货单（创建交货单、生成交货单、自动交货、交货等）
+8. POST_DELIVERY - 交货单过账（过账、发货过账、交货单过账等）
+9. CREATE_INVOICE - 创建发票（开票、创建发票、生成发票等）
+10. COPY_ORDER - 复制订单（复制订单、基于订单创建等）
+11. CREATE_SALES_ORDER - 创建销售订单（创建销售订单、基于昨天的最后一个订单复制等）
+12. NAVIGATE_INVOICE - 跳转到发票页面
+13. NAVIGATE_DELIVERY - 跳转到交货单页面
+14. NAVIGATE_DOCUMENT_FLOW - 跳转到单据流页面
+15. SMALLTALK - 闲聊或询问如何使用
+
+请以JSON格式返回结果，格式如下：
+{
+    "intent": "意图类型",
+    "confidence": 0.0-1.0的置信度,
+    "extracted": {
+        "vbeln": "销售订单号（如果提到）",
+        "delivery_vbeln": "交货单号（如果提到，通常是8位数字，可能以8开头）",
+        "invoice_vbeln": "发票号（如果提到）"
+    },
+    "reasoning": "简要说明识别理由"
+}
+
+注意：
+- 销售订单号通常是VB开头+数字，或纯数字（10位以上）
+- 交货单号通常是8位数字，可能以8开头（如8000000048）
+- 发票号通常是10位数字
+- 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等，应该是QUERY_ORDER_DETAIL
+- 如果用户提到"跳转到订单XXX"、"打开订单XXX"等，应该是NAVIGATE_ORDER_DETAIL
+- 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
+- 优先提取订单号、交货单号、发票号，即使表达不完整也要识别"""
+
+        user_prompt = f"用户查询：{text}\n\n请识别意图并提取关键信息。"
+        
+        resp = requests.post(
+            f"{openai_base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openai_api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": openai_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.1,  # 降低温度以提高准确性
+                "max_tokens": 300
+            },
+            timeout=10
+        )
+        
+        resp.raise_for_status()
+        data = resp.json()
+        completion = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        
+        # 尝试解析JSON
+        try:
+            # 先去掉markdown代码块标记（```json 和 ```）
+            cleaned = completion.strip()
+            if cleaned.startswith('```'):
+                # 去掉开头的 ```json 或 ```
+                cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
+            if cleaned.endswith('```'):
+                # 去掉结尾的 ```
+                cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+            cleaned = cleaned.strip()
+            
+            # 提取JSON部分（使用更强大的正则表达式，支持嵌套）
+            # 先尝试直接解析整个cleaned字符串
+            try:
+                result = json.loads(cleaned)
+                logger.info(f"LLM识别意图成功: {result}")
+                return result
+            except json.JSONDecodeError:
+                # 如果直接解析失败，尝试提取JSON对象（支持嵌套）
+                # 使用平衡括号匹配
+                brace_count = 0
+                start_idx = cleaned.find('{')
+                if start_idx >= 0:
+                    for i in range(start_idx, len(cleaned)):
+                        if cleaned[i] == '{':
+                            brace_count += 1
+                        elif cleaned[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_str = cleaned[start_idx:i+1]
+                                result = json.loads(json_str)
+                                logger.info(f"LLM识别意图成功（提取后）: {result}")
+                                return result
+        except json.JSONDecodeError as e:
+            logger.warning(f"LLM返回格式不正确: {completion}, 错误: {e}")
+        except Exception as e:
+            logger.warning(f"解析LLM响应失败: {completion}, 错误: {e}")
+        
+        return None
+        
+    except Exception as e:
+        logger.warning(f"LLM意图识别失败: {e}")
+        return None
 
 def _identify_intent(text: str) -> str:
     """
@@ -137,6 +285,10 @@ def _identify_intent(text: str) -> str:
             return "ATP_CHECK"
         elif any(keyword in text_lower for keyword in ["创建交货单", "生成交货单", "自动交货", "交货"]):
             return "CREATE_DELIVERY"
+        elif any(keyword in text_lower for keyword in ["过账", "发货过账", "交货单过账", "过账交货单"]):
+            return "POST_DELIVERY"
+        elif any(keyword in text_lower for keyword in ["开票", "创建发票", "生成发票", "发票"]):
+            return "CREATE_INVOICE"
         else:
             # 如果提到订单号但没有明确意图，默认查询详情
             return "QUERY_ORDER_DETAIL"
@@ -149,6 +301,14 @@ def _identify_intent(text: str) -> str:
     if any(keyword in text_lower for keyword in ["创建交货单", "生成交货单", "自动创建交货单", "创建发货单"]):
         return "CREATE_DELIVERY"
     
+    # 交货单过账
+    if any(keyword in text_lower for keyword in ["过账", "发货过账", "交货单过账", "过账交货单", "为这个外向交货单过账"]):
+        return "POST_DELIVERY"
+    
+    # 创建发票
+    if any(keyword in text_lower for keyword in ["开票", "创建发票", "生成发票", "为这个外向交货单开票", "为交货单开票"]):
+        return "CREATE_INVOICE"
+    
     # 创建销售订单（基于昨天的最后一个订单复制）
     if any(keyword in text_lower for keyword in ["创建销售订单", "复制订单", "基于", "昨天的", "最后一个订单"]):
         if "复制" in text_lower or "基于" in text_lower:
@@ -156,6 +316,96 @@ def _identify_intent(text: str) -> str:
     
     # 默认：闲聊
     return "SMALLTALK"
+
+async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
+    """
+    处理闲聊或超出能力范围的问题，使用LLM自动回答
+    
+    Args:
+        query: 用户查询
+        intent: 识别的意图（通常是SMALLTALK）
+        
+    Returns:
+        包含LLM回答的响应
+    """
+    # 检查是否启用LLM
+    use_llm = os.getenv("USE_LLM_SD_AGENT", "true").lower() == "true"
+    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
+    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    openai_model = os.getenv("SD_AGENT_LLM_MODEL", "qwen-max-latest")
+    
+    explanation = None
+    
+    if use_llm and openai_api_key and openai_base_url:
+        try:
+            system_prompt = """你是销售与分销(SD)系统的智能助手。你的主要能力包括：
+1. 查询销售订单列表和详情
+2. ATP物料可用性检查
+3. 自动创建交货单
+4. 交货单过账
+5. 创建发票
+6. 复制订单
+7. 创建销售订单
+
+当用户的问题不在你的能力范围内时，请友好地说明你能做什么，并给出一些示例。
+用简洁、专业、友好的中文回答。不要编造具体的数据或表格。"""
+
+            resp = requests.post(
+                f"{openai_base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {openai_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": openai_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": query}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 500
+                },
+                timeout=15
+            )
+            
+            resp.raise_for_status()
+            data = resp.json()
+            explanation = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            
+            if explanation:
+                logger.info(f"LLM自动回答成功，长度: {len(explanation)}")
+            else:
+                logger.warning("LLM返回空内容")
+                
+        except Exception as e:
+            logger.warning(f"LLM自动回答失败: {e}")
+    
+    # 如果LLM失败或未启用，使用默认回答
+    if not explanation:
+        explanation = (
+            "我是SD Agent，可以帮助您：\n"
+            "1. 查询销售订单列表和详情（例如：查询销售订单列表、查看订单VB2025000059的详情）\n"
+            "2. ATP物料可用性检查（例如：检查订单VB2025000059的ATP、检查库存）\n"
+            "3. 创建交货单（例如：为订单VB2025000059创建交货单）\n"
+            "4. 交货单过账（例如：为交货单8000000048过账）\n"
+            "5. 创建发票（例如：为交货单8000000048开票）\n"
+            "6. 复制订单（例如：复制订单VB2025000059）\n\n"
+            "请告诉我您需要什么帮助？"
+        )
+    
+    return {
+        "success": True,
+        "intent": intent,
+        "data": {
+            "type": "text",
+            "text": explanation
+        },
+        "message": explanation  # 将LLM的回答也放在message字段，方便前端直接显示
+    }
 
 @router.post("/sd-agent/ai-query")
 async def sd_ai_query(
@@ -195,9 +445,33 @@ async def sd_ai_query(
         
         logger.info(f"收到SD Agent查询: {query}")
         
-        # 识别意图
-        intent = _identify_intent(query)
-        logger.info(f"识别意图: {intent}")
+        # 识别意图：优先使用LLM，失败则使用规则匹配
+        intent = None
+        extracted = {}
+        llm_result = await _identify_intent_with_llm(query)
+        
+        if llm_result and llm_result.get("intent"):
+            # LLM识别成功且置信度高
+            intent = llm_result.get("intent")
+            confidence = llm_result.get("confidence", 0.0)
+            extracted = llm_result.get("extracted", {})
+            logger.info(f"LLM识别意图: {intent}, 置信度: {confidence}, 提取信息: {extracted}")
+            
+            # 如果置信度太低，回退到规则匹配
+            if confidence < 0.5:
+                logger.warning(f"LLM置信度太低({confidence})，回退到规则匹配")
+                intent = None
+        
+        # 如果LLM识别失败或置信度太低，使用规则匹配
+        if not intent:
+            intent = _identify_intent(query)
+            logger.info(f"规则匹配识别意图: {intent}")
+            
+            # 使用规则提取订单号等信息
+            if not extracted.get("vbeln"):
+                extracted["vbeln"] = _extract_order_number(query)
+            if not extracted.get("delivery_vbeln"):
+                extracted["delivery_vbeln"] = _extract_delivery_number(query)
         
         # 根据意图处理
         if intent == "QUERY_ORDER_LIST":
@@ -223,7 +497,8 @@ async def sd_ai_query(
         
         elif intent == "QUERY_ORDER_DETAIL":
             # 查询订单详情
-            vbeln = _extract_order_number(query)
+            # 优先使用LLM提取的订单号，否则使用规则提取
+            vbeln = extracted.get("vbeln") or _extract_order_number(query)
             if not vbeln:
                 return {
                     "success": False,
@@ -244,7 +519,8 @@ async def sd_ai_query(
         
         elif intent == "ATP_CHECK" or intent == "CREATE_DELIVERY":
             # ATP检查或创建交货单
-            vbeln = _extract_order_number(query)
+            # 优先使用LLM提取的订单号，否则使用规则提取
+            vbeln = extracted.get("vbeln") or _extract_order_number(query)
             if not vbeln:
                 # 根据意图区分提示文案
                 if intent == "CREATE_DELIVERY":
@@ -450,9 +726,90 @@ async def sd_ai_query(
                             }
                         }
         
+        elif intent == "POST_DELIVERY":
+            # 交货单过账
+            # 优先使用LLM提取的交货单号，否则使用规则提取
+            delivery_vbeln = extracted.get("delivery_vbeln") or _extract_delivery_number(query)
+            if not delivery_vbeln:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": "请提供交货单号，例如：为交货单8000000048过账"
+                }
+            
+            try:
+                result = await sd_service.post_delivery(delivery_vbeln)
+                
+                if result.get("code") == 200:
+                    return {
+                        "success": True,
+                        "intent": intent,
+                        "data": {
+                            "type": "delivery_posted",
+                            "message": f"交货单 {delivery_vbeln} 过账成功！",
+                            "vbeln": delivery_vbeln
+                        }
+                    }
+                else:
+                    error_msg = result.get("msg", "过账失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"交货单 {delivery_vbeln} 过账失败：{error_msg}"
+                    }
+            except Exception as e:
+                logger.error(f"交货单过账失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": f"交货单过账时出错：{str(e)}"
+                }
+        
+        elif intent == "CREATE_INVOICE":
+            # 创建发票（从交货单开票）
+            # 优先使用LLM提取的交货单号，否则使用规则提取
+            delivery_vbeln = extracted.get("delivery_vbeln") or _extract_delivery_number(query)
+            if not delivery_vbeln:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": "请提供交货单号，例如：为交货单8000000048开票"
+                }
+            
+            try:
+                result = await sd_service.create_invoice_from_delivery(delivery_vbeln)
+                
+                if result.get("code") == 200:
+                    invoice_vbeln = result.get("data")
+                    return {
+                        "success": True,
+                        "intent": intent,
+                        "data": {
+                            "type": "invoice_created",
+                            "message": f"为交货单 {delivery_vbeln} 创建发票成功！发票号：{invoice_vbeln}",
+                            "delivery_vbeln": delivery_vbeln,
+                            "invoice_vbeln": invoice_vbeln
+                        }
+                    }
+                else:
+                    error_msg = result.get("msg", "开票失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"为交货单 {delivery_vbeln} 开票失败：{error_msg}"
+                    }
+            except Exception as e:
+                logger.error(f"创建发票失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": f"创建发票时出错：{str(e)}"
+                }
+        
         elif intent == "COPY_ORDER":
             # 根据指定订单复制创建新订单
-            vbeln = _extract_order_number(query)
+            # 优先使用LLM提取的订单号，否则使用规则提取
+            vbeln = extracted.get("vbeln") or _extract_order_number(query)
             if not vbeln:
                 return {
                     "success": False,
@@ -789,7 +1146,8 @@ async def sd_ai_query(
                 }
                 
                 route = route_map.get(intent, intent.replace("NAVIGATE_", "").lower())
-                vbeln = _extract_order_number(query) if "ORDER" in intent else None
+                # 优先使用LLM提取的订单号，否则使用规则提取
+                vbeln = (extracted.get("vbeln") or _extract_order_number(query)) if "ORDER" in intent else None
                 
                 return {
                     "success": True,
@@ -813,22 +1171,8 @@ async def sd_ai_query(
                 }
         
         else:
-            # 闲聊
-            return {
-                "success": True,
-                "intent": intent,
-                "data": {
-                    "type": "text",
-                    "message": (
-                        "你好，我是SD智能体。我可以帮您：\n"
-                        "1. 查询销售订单列表（例如：显示最近的订单）\n"
-                        "2. 查看订单详情（例如：查看订单VB2025000059）\n"
-                        "3. 检查物料可用性（例如：检查订单VB2025000059的物料可用性）\n"
-                        "4. 创建交货单（例如：为订单VB2025000059创建交货单）\n"
-                        "5. 销售模块概览（例如：打开订单列表）"
-                    )
-                }
-            }
+            # 闲聊或超出能力范围的问题，使用LLM自动回答
+            return await _handle_smalltalk_with_llm(query, intent or "SMALLTALK")
     
     except HTTPException:
         raise

@@ -519,14 +519,22 @@ async def sd_ai_query(
         
         elif intent == "ATP_CHECK" or intent == "CREATE_DELIVERY":
             # ATP检查或创建交货单
-            # 优先使用LLM提取的订单号，否则使用规则提取
+            # 优先使用LLM提取的订单号，否则使用规则提取，最后尝试从上下文获取
             vbeln = extracted.get("vbeln") or _extract_order_number(query)
+            
+            # 如果还没有订单号，尝试从请求的上下文信息中获取
+            if not vbeln:
+                context = payload.get("context", {})
+                vbeln = context.get("vbeln")
+                if vbeln:
+                    logger.info(f"从上下文获取订单号: {vbeln}")
+            
             if not vbeln:
                 # 根据意图区分提示文案
                 if intent == "CREATE_DELIVERY":
                     error_message = "请提供销售订单号，例如：为订单 VB2025000059 创建交货单"
                 else:
-                    error_message = "请提供销售订单号，例如：检查订单 VB2025000059 的物料可用性"
+                    error_message = "请提供销售订单号，例如：检查订单 VB2025000059 的物料可用性。如果当前页面显示了订单详情，也可以直接说'检查物料可用性'，系统会自动使用当前订单。"
                 return {
                     "success": False,
                     "intent": intent,

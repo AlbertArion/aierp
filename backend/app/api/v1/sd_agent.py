@@ -97,6 +97,7 @@ def _extract_order_number(text: str) -> Optional[str]:
     """
     patterns = [
         r"(?:订单号|订单|SO|VBELN)[\s\-:]?([A-Z0-9\-]+)",
+        r"(VB\d{10,})",  # VB开头的订单号（优先匹配）
         r"([A-Z]{2,4}[\-]?\d{8,})",
         r"([0-9]{10,})",  # 纯数字订单号
     ]
@@ -107,7 +108,36 @@ def _extract_order_number(text: str) -> Optional[str]:
             order_num = match.group(1).strip()
             # 过滤掉太短的数字（可能是年份等）
             if len(order_num) >= 8:
+                logger.debug(f"从文本 '{text}' 中提取到订单号: {order_num} (使用模式: {pattern})")
                 return order_num
+    
+    logger.debug(f"无法从文本 '{text}' 中提取订单号")
+    return None
+
+def _extract_production_order_number(text: str) -> Optional[str]:
+    """
+    从文本中提取生产订单号（aufnr）
+    生产订单号通常是10位数字，如8900000103
+    
+    Returns:
+        生产订单号（如 "8900000103"），如果未找到则返回None
+    """
+    import re
+    # 匹配生产订单相关关键词后的数字
+    patterns = [
+        r'(?:生产订单|生产订单号|aufnr)[\s:：]?(\d{10})',
+        r'生产订单\s*(\d{10})',
+        r'\b(89\d{8}|8\d{9})\b',  # 10位数字，通常以8或89开头
+        r'\b(\d{10})\b',  # 10位数字（通用匹配）
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            # 返回第一个匹配的10位数字
+            for match in matches:
+                if len(match) == 10:
+                    return match
     
     return None
 
@@ -140,16 +170,17 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 3. NAVIGATE_ORDER_DETAIL - 跳转到订单详情页面（跳转、打开、进入订单详情等）
 4. NAVIGATE_ORDER_LIST - 跳转到订单列表页面（跳转到订单列表等）
 5. NAVIGATE_ORDER_EDIT - 跳转到订单编辑页面（修改、编辑订单等）
-6. ATP_CHECK - ATP物料可用性检查（atp、可用性、库存检查、物料可用、库存够等）
-7. CREATE_DELIVERY - 创建交货单（创建交货单、生成交货单、自动交货、交货等）
-8. POST_DELIVERY - 交货单过账（过账、发货过账、交货单过账等）
-9. CREATE_INVOICE - 创建发票（开票、创建发票、生成发票等）
-10. COPY_ORDER - 复制订单（复制订单、基于订单创建等）
-11. CREATE_SALES_ORDER - 创建销售订单（创建销售订单、基于昨天的最后一个订单复制等）
-12. NAVIGATE_INVOICE - 跳转到发票页面
-13. NAVIGATE_DELIVERY - 跳转到交货单页面
-14. NAVIGATE_DOCUMENT_FLOW - 跳转到单据流页面
-15. SMALLTALK - 闲聊或询问如何使用
+6. ATP_CHECK - 销售订单ATP物料可用性检查（检查销售订单的atp、可用性、库存检查、物料可用、库存够等，注意：这是针对销售订单的）
+7. CHECK_PRODUCTION_ORDER_MATERIAL - 生产订单物料可用性检查（齐套性检查）（检查生产订单的物料可用性、齐套性检查等，注意：这是针对生产订单的，不是销售订单）
+8. CREATE_DELIVERY - 创建交货单（创建交货单、生成交货单、自动交货、交货等）
+9. POST_DELIVERY - 交货单过账（过账、发货过账、交货单过账等）
+10. CREATE_INVOICE - 创建发票（开票、创建发票、生成发票等）
+11. COPY_ORDER - 复制订单（复制订单、基于订单创建等）
+12. CREATE_SALES_ORDER - 创建销售订单（创建销售订单、基于昨天的最后一个订单复制等）
+13. NAVIGATE_INVOICE - 跳转到发票页面
+14. NAVIGATE_DELIVERY - 跳转到交货单页面
+15. NAVIGATE_DOCUMENT_FLOW - 跳转到单据流页面
+16. SMALLTALK - 闲聊或询问如何使用
 
 请以JSON格式返回结果，格式如下：
 {
@@ -158,7 +189,8 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
     "extracted": {
         "vbeln": "销售订单号（如果提到）",
         "delivery_vbeln": "交货单号（如果提到，通常是8位数字，可能以8开头）",
-        "invoice_vbeln": "发票号（如果提到）"
+        "invoice_vbeln": "发票号（如果提到）",
+        "aufnr": "生产订单号（如果提到，通常是10位数字，如8900000103）"
     },
     "reasoning": "简要说明识别理由"
 }
@@ -167,10 +199,15 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 - 销售订单号通常是VB开头+数字，或纯数字（10位以上）
 - 交货单号通常是8位数字，可能以8开头（如8000000048）
 - 发票号通常是10位数字
+- 生产订单号通常是10位数字，如8900000103（注意区分：生产订单号是10位数字，销售订单号可能也是10位，但通常有VB前缀或上下文表明是销售订单）
 - 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等，应该是QUERY_ORDER_DETAIL
 - 如果用户提到"跳转到订单XXX"、"打开订单XXX"等，应该是NAVIGATE_ORDER_DETAIL
 - 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
-- 优先提取订单号、交货单号、发票号，即使表达不完整也要识别"""
+- **重要区分**：
+  * 如果提到"生产订单"的"物料可用性"、"齐套性检查"等，应该识别为 CHECK_PRODUCTION_ORDER_MATERIAL，并将订单号提取为aufnr
+  * 如果提到"销售订单"或仅提到"订单"的"ATP"、"可用性检查"等，应该识别为 ATP_CHECK，并将订单号提取为vbeln
+  * 如果同时提到"生产订单"和"物料可用性"，必须识别为 CHECK_PRODUCTION_ORDER_MATERIAL，而不是 ATP_CHECK
+- 优先提取订单号、交货单号、发票号、生产订单号，即使表达不完整也要识别"""
 
         user_prompt = f"用户查询：{text}\n\n请识别意图并提取关键信息。"
         
@@ -472,6 +509,38 @@ async def sd_ai_query(
                 extracted["vbeln"] = _extract_order_number(query)
             if not extracted.get("delivery_vbeln"):
                 extracted["delivery_vbeln"] = _extract_delivery_number(query)
+            if not extracted.get("aufnr"):
+                extracted["aufnr"] = _extract_production_order_number(query)
+        
+        # 特殊处理：区分生产订单物料可用性检查和销售订单ATP检查
+        query_lower = query.lower()
+        production_order_keywords = ["生产订单", "生产订单号", "aufnr"]
+        material_availability_keywords = ["物料可用性", "齐套", "齐套性", "齐套检查"]
+        atp_keywords = ["atp", "可用性检查", "库存检查", "检查库存", "可用性"]
+        has_production_order = any(keyword in query_lower for keyword in production_order_keywords)
+        has_material_availability = any(keyword in query_lower for keyword in material_availability_keywords)
+        has_atp_keyword = any(keyword in query_lower for keyword in atp_keywords)
+        
+        # 如果明确提到"生产订单"和"物料可用性"，应该识别为生产订单物料可用性检查
+        if has_production_order and has_material_availability:
+            aufnr = extracted.get("aufnr") or _extract_production_order_number(query) or payload.get("context", {}).get("aufnr")
+            if aufnr:
+                if intent != "CHECK_PRODUCTION_ORDER_MATERIAL":
+                    logger.info(f"检测到生产订单物料可用性检查关键词且有生产订单号{aufnr}，但意图识别为{intent}，强制修正为CHECK_PRODUCTION_ORDER_MATERIAL")
+                    intent = "CHECK_PRODUCTION_ORDER_MATERIAL"
+                if not extracted.get("aufnr"):
+                    extracted["aufnr"] = aufnr
+        
+        # 如果消息中包含ATP相关关键词且有销售订单号（且不是生产订单），强制识别为ATP_CHECK
+        # 这可以纠正LLM的错误识别（例如将"ATP检查订单XXX"识别为QUERY_ORDER_LIST）
+        if not has_production_order and has_atp_keyword and not intent == "CHECK_PRODUCTION_ORDER_MATERIAL":
+            has_vbeln = extracted.get("vbeln") or _extract_order_number(query) or payload.get("context", {}).get("vbeln")
+            if has_vbeln and intent != "ATP_CHECK" and intent != "CREATE_DELIVERY":
+                logger.info(f"检测到ATP关键词且有销售订单号，但意图识别为{intent}，强制修正为ATP_CHECK")
+                intent = "ATP_CHECK"
+                # 确保订单号被提取
+                if not extracted.get("vbeln"):
+                    extracted["vbeln"] = _extract_order_number(query) or payload.get("context", {}).get("vbeln")
         
         # 根据意图处理
         if intent == "QUERY_ORDER_LIST":
@@ -500,22 +569,44 @@ async def sd_ai_query(
             # 优先使用LLM提取的订单号，否则使用规则提取
             vbeln = extracted.get("vbeln") or _extract_order_number(query)
             if not vbeln:
+                # 如果没有订单号，返回友好提示，建议用户提供订单号或查询订单列表
                 return {
                     "success": False,
                     "intent": intent,
+                    "data": {
+                        "type": "text",
+                        "text": "请提供销售订单号，例如：查看订单VB2025000059\n\n或者您可以：\n1. 查询销售订单列表（例如：查询销售订单列表）\n2. 查看最近的订单"
+                    },
                     "message": "请提供销售订单号，例如：查看订单VB2025000059"
                 }
             
-            result = await sd_service.get_order_detail(vbeln)
+            try:
+                result = await sd_service.get_order_detail(vbeln)
             
-            return {
-                "success": True,
-                "intent": intent,
-                "data": {
-                    "type": "order_detail",
-                    "order": result.get("data")
+                # 检查订单是否存在
+                if result.get("code") != 200:
+                    error_msg = result.get("msg", "查询订单详情失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"查询订单 {vbeln} 详情失败：{error_msg}"
+                    }
+                
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "order_detail",
+                        "order": result.get("data")
+                    }
                 }
-            }
+            except Exception as e:
+                logger.error(f"查询订单详情失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": f"查询订单 {vbeln} 详情时出错：{str(e)}"
+                }
         
         elif intent == "ATP_CHECK" or intent == "CREATE_DELIVERY":
             # ATP检查或创建交货单
@@ -606,6 +697,50 @@ async def sd_ai_query(
                     if not order_info.get("vgbel"):
                         order_info["vgbel"] = vbeln
                     
+                    # ★★★ 修复：从上下文（货物移动凭证）获取库存地点信息，并应用到行项目中 ★★★
+                    # 如果上下文中有货物移动凭证信息，使用其中的库存地点
+                    context = payload.get("context", {})
+                    receipt = context.get("receipt")  # 货物移动凭证
+                    if receipt:
+                        # 从货物移动凭证中获取库存地点信息
+                        receipt_lgort = receipt.get("lgort")
+                        receipt_werks = receipt.get("werks")
+                        receipt_lips = receipt.get("lips", [])  # 行项目列表
+                        
+                        # 如果有库存地点信息，应用到订单行项目中
+                        if receipt_lgort and order_info.get("psList"):
+                            ps_list = order_info.get("psList", [])
+                            for ps in ps_list:
+                                # 如果行项目的物料与货物移动凭证中的物料匹配，使用货物移动凭证的库存地点
+                                # 优先匹配物料号，如果没有物料号，匹配物料描述
+                                ps_matnr = ps.get("matnr")
+                                ps_maktx = ps.get("maktx") or ps.get("arktx")
+                                
+                                # 在货物移动凭证的行项目中查找匹配的物料
+                                matched = False
+                                for receipt_lip in receipt_lips:
+                                    receipt_matnr = receipt_lip.get("matnr")
+                                    receipt_maktx = receipt_lip.get("maktx") or receipt_lip.get("arktx")
+                                    
+                                    # 匹配物料号或物料描述
+                                    if (ps_matnr and receipt_matnr and ps_matnr == receipt_matnr) or \
+                                       (ps_maktx and receipt_maktx and ps_maktx == receipt_maktx):
+                                        # 使用货物移动凭证的库存地点和工厂
+                                        if receipt_lgort:
+                                            ps["lgort"] = receipt_lgort
+                                            logger.info(f"从货物移动凭证应用库存地点到行项目: 物料={ps_matnr or ps_maktx}, 库存地点={receipt_lgort}")
+                                        if receipt_werks:
+                                            ps["werks"] = receipt_werks
+                                        matched = True
+                                        break
+                                
+                                # 如果没有匹配到具体的行项目，但货物移动凭证有库存地点，也应用（适用于单物料场景）
+                                if not matched and receipt_lgort and len(receipt_lips) == 1:
+                                    ps["lgort"] = receipt_lgort
+                                    if receipt_werks:
+                                        ps["werks"] = receipt_werks
+                                    logger.info(f"从货物移动凭证应用库存地点到行项目（单物料）: 物料={ps_matnr or ps_maktx}, 库存地点={receipt_lgort}")
+                    
                     delivery_result = await sd_service.create_delivery(order_info)
                     delivery_vbeln = delivery_result.get("data")
                     
@@ -672,8 +807,10 @@ async def sd_ai_query(
                         }
                     else:
                         # ATP检查失败，返回详细结果
+                        # 注意：success 应该返回 True，因为请求已成功处理并返回了检查结果
+                        # 业务结果的"失败"通过 data.type: "atp_check_failed" 来表示
                         return {
-                            "success": False,
+                            "success": True,
                             "intent": intent,
                             "data": {
                                 "type": "atp_check_failed",
@@ -733,6 +870,496 @@ async def sd_ai_query(
                                 "action": solution_info.get("action", {})
                             }
                         }
+        
+        elif intent == "CHECK_PRODUCTION_ORDER_MATERIAL":
+            # 生产订单物料可用性检查（齐套性检查）
+            # 优先使用LLM提取的生产订单号，否则使用规则提取，最后尝试从上下文获取
+            aufnr = extracted.get("aufnr") or _extract_production_order_number(query)
+            
+            # 如果还没有生产订单号，尝试从请求的上下文信息中获取
+            if not aufnr:
+                context = payload.get("context", {})
+                aufnr = context.get("aufnr")
+                if aufnr:
+                    logger.info(f"从上下文获取生产订单号: {aufnr}")
+            
+            if not aufnr:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": "请提供生产订单号，例如：检查生产订单8900000103的物料可用性"
+                }
+            
+            try:
+                # 调用生产订单物料可用性检查（齐套性检查）
+                check_result = await sd_service.check_production_order_material_availability(aufnr)
+                
+                # 检查结果格式：如果是标准响应格式，使用code字段；如果不是，可能需要直接使用data
+                result_code = check_result.get("code")
+                if result_code is None:
+                    # 如果没有code字段，可能是直接返回的数据，尝试判断是否有success字段
+                    if check_result.get("success") is not False:
+                        result_code = 200
+                    else:
+                        result_code = 500
+                
+                # 处理服务不可用的情况（503）
+                if result_code == 503:
+                    error_type = check_result.get("error_type")
+                    if error_type == "SERVICE_UNAVAILABLE":
+                        order_info = check_result.get("order_info", {})
+                        resb_list = order_info.get("resb_list", [])
+                        resb_count = order_info.get("resb_count", 0)
+                        
+                        # 即使服务不可用，也提供BOM组件信息
+                        resb_summary = []
+                        if resb_list:
+                            for resb in resb_list[:10]:  # 只显示前10个组件
+                                resb_summary.append({
+                                    "matnr": resb.get("matnr"),
+                                    "maktx": resb.get("maktx"),
+                                    "bdmng": resb.get("bdmng"),
+                                    "meins": resb.get("meins") or resb.get("erfme"),
+                                    "werks": resb.get("werks")
+                                })
+                        
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "data": {
+                                "type": "production_order_material_check_service_unavailable",
+                                "message": check_result.get("message", "物料可用性检查服务暂时不可用"),
+                                "aufnr": aufnr,
+                                "resb_count": resb_count,
+                                "resb_list": resb_summary,
+                                "suggestion": "请启动物料需求管理服务（sinocst-module-me）后重试，或手动检查物料库存。"
+                            }
+                        }
+                
+                if result_code == 200:
+                    # 齐套检查返回的数据是一个列表，如果列表为空，说明所有物料都充足
+                    not_enough_list = check_result.get("data", [])
+                    
+                    # 检查是否是"无法检查"的情况（resbList为空）
+                    error_type = check_result.get("error_type")
+                    if error_type == "NO_BOM_DATA":
+                        error_msg = check_result.get("message", "生产订单没有BOM组件数据，无法进行物料可用性检查")
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "data": {
+                                "type": "production_order_material_check_failed",
+                                "message": f"生产订单 {aufnr} 的物料可用性检查失败：{error_msg}。请确保生产订单已正确创建BOM组件数据。",
+                                "aufnr": aufnr
+                            }
+                        }
+                    
+                    if not not_enough_list or len(not_enough_list) == 0:
+                        # 齐套检查通过，但需要返回所有物料信息以供前端展示
+                        # 获取order_info中的resb_list和mareq_items来补充字段
+                        order_info = check_result.get("order_info", {})
+                        resb_list = order_info.get("resb_list", [])
+                        mareq_items = order_info.get("mareq_items", [])
+                        
+                        # 构建物料映射表，方便快速查找
+                        resb_map = {}
+                        for resb in resb_list:
+                            matnr = resb.get("matnr")
+                            if matnr and matnr not in resb_map:
+                                resb_map[matnr] = resb
+                        
+                        # 优先使用mareq_items，因为它包含了更完整的信息
+                        mareq_map = {}
+                        for mareq in mareq_items:
+                            matnr = mareq.get("matnr")
+                            if matnr and matnr not in mareq_map:
+                                mareq_map[matnr] = mareq
+                        
+                        # 使用mareq_items作为数据源（如果没有，则使用resb_list）
+                        all_materials = mareq_items if mareq_items else resb_list
+                        
+                        # 构建查询库存的参数列表（使用mandt字段）
+                        inventory_query_list = []
+                        for material in all_materials:
+                            matnr = material.get("matnr")
+                            werks = material.get("werks")
+                            
+                            if matnr and werks:
+                                inventory_query_list.append({
+                                    "mandt": material.get("mandt", "600"),  # 默认mandt
+                                    "matnr": matnr,
+                                    "werks": werks,
+                                    "lgort": material.get("lgort") or ""
+                                })
+                        
+                        # 查询库存信息
+                        inventory_map = {}
+                        if inventory_query_list:
+                            try:
+                                inventory_result = await sd_service._request(
+                                    method="POST",
+                                    path="/sinocst-module-wm/sinocst-mard/mard/getStatusById",
+                                    json=inventory_query_list
+                                )
+                                if inventory_result.get("code") == 200:
+                                    inventory_data = inventory_result.get("data", [])
+                                    # 建立映射：key = matnr-werks-lgort 或 matnr-werks
+                                    for inv in inventory_data:
+                                        matnr_key = inv.get("matnr")
+                                        if matnr_key:
+                                            # 如果有库存地点，使用matnr-werks-lgort作为key，否则使用matnr-werks
+                                            lgort_key = inv.get("lgort") or ""
+                                            werks_key = inv.get("werks") or ""
+                                            key = f"{matnr_key}-{werks_key}-{lgort_key}" if lgort_key else f"{matnr_key}-{werks_key}"
+                                            if key not in inventory_map:
+                                                inventory_map[key] = inv
+                                            # 同时使用matnr作为key，方便查找
+                                            if matnr_key not in inventory_map:
+                                                inventory_map[matnr_key] = inv
+                            except Exception as e:
+                                logger.warning(f"查询库存信息失败: {e}")
+                                # 查询失败不影响主流程，继续使用空数据
+                        
+                        # 构建所有物料的items列表
+                        all_materials_items = []
+                        for material in all_materials:
+                            matnr = material.get("matnr")
+                            if not matnr:
+                                continue
+                            
+                            # 从mareq_map或resb_map中获取完整信息
+                            mareq_info = mareq_map.get(matnr)
+                            resb_info = resb_map.get(matnr)
+                            source_info = mareq_info or resb_info or material
+                            
+                            werks = source_info.get("werks") or ""
+                            lgort = source_info.get("lgort") or ""
+                            meins = source_info.get("erfme") or source_info.get("meins") or ""
+                            # 确保bdmng是数字类型
+                            bdmng_raw = source_info.get("bdmng") or source_info.get("plmng") or source_info.get("erfmg") or 0
+                            try:
+                                bdmng = float(bdmng_raw) if bdmng_raw else 0
+                            except (ValueError, TypeError):
+                                bdmng = 0
+                            maktx = source_info.get("maktx") or ""
+                            
+                            # 查找库存信息（先尝试精确匹配，再尝试只匹配matnr）
+                            inventory_info = None
+                            if lgort and werks:
+                                key = f"{matnr}-{werks}-{lgort}"
+                                inventory_info = inventory_map.get(key)
+                            if not inventory_info and werks:
+                                key = f"{matnr}-{werks}"
+                                inventory_info = inventory_map.get(key)
+                            if not inventory_info:
+                                inventory_info = inventory_map.get(matnr) or {}
+                            
+                            # 修复：优先使用库存查询返回的lgort（实际有库存的库存地点）
+                            if inventory_info and inventory_info.get("lgort"):
+                                lgort = inventory_info.get("lgort")
+                                logger.info(f"物料 {matnr} 使用库存查询返回的库存地点：{lgort}")
+                            
+                            # 确保库存数量是数字类型
+                            labst_raw = inventory_info.get("labst") or 0
+                            speme_raw = inventory_info.get("speme") or 0
+                            insme_raw = inventory_info.get("insme") or 0
+                            try:
+                                labst = float(labst_raw) if labst_raw else 0
+                            except (ValueError, TypeError):
+                                labst = 0
+                            try:
+                                speme = float(speme_raw) if speme_raw else 0
+                            except (ValueError, TypeError):
+                                speme = 0
+                            try:
+                                insme = float(insme_raw) if insme_raw else 0
+                            except (ValueError, TypeError):
+                                insme = 0
+                            
+                            # 计算实际可用库存 = 非限制库存 - 冻结库存
+                            actual_available_qty = max(0, labst - speme)
+                            
+                            # 根据实际库存判断物料是否充足
+                            is_available = actual_available_qty >= bdmng
+                            if is_available:
+                                message = f"库存充足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                            else:
+                                message = f"库存不足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                            
+                            # 修复：如果物料充足且生产订单没有库存地点，默认选中自由库L001
+                            if is_available and (not lgort or lgort.strip() == ""):
+                                lgort = "L001"
+                                logger.info(f"物料 {matnr} 充足且没有库存地点，默认设置为L001")
+                            
+                            # 构建物料项数据
+                            material_item = {
+                                "matnr": matnr,
+                                "matnr_name": maktx,  # 前端使用matnr_name字段
+                                "maktx": maktx,  # 保留maktx字段以兼容
+                                "werks": werks,
+                                "lgort": lgort,  # 使用修复后的lgort（如果为空则默认为L001）
+                                "meins": meins,
+                                "need_qty": bdmng,
+                                "labst": labst,
+                                "speme": speme,
+                                "insme": insme,
+                                "actual_available_qty": actual_available_qty,
+                                "is_available": is_available,  # 根据实际库存判断
+                                "relatnr": source_info.get("relatnr") or aufnr,  # 关联订单号
+                                "rspos": source_info.get("rspos") or "",  # 预留项目号
+                                "message": message
+                            }
+                            all_materials_items.append(material_item)
+                        
+                        # 检查是否所有物料都充足
+                        all_available = all(item.get("is_available", False) for item in all_materials_items)
+                        
+                        # 生成仓储管理列表（warehouse_list）：只包含充足且已设置库存地点的物料
+                        warehouse_list = []
+                        for item in all_materials_items:
+                            if item.get("is_available", False) and item.get("lgort"):
+                                warehouse_list.append({
+                                    "matnr": item.get("matnr"),
+                                    "matnr_name": item.get("matnr_name") or item.get("maktx"),
+                                    "menge": item.get("need_qty"),
+                                    "meins": item.get("meins"),
+                                    "werks": item.get("werks"),
+                                    "lgort": item.get("lgort")
+                                })
+                        
+                        if all_available:
+                            return {
+                                "success": True,
+                                "intent": intent,
+                                "data": {
+                                    "type": "production_order_material_check",
+                                    "message": f"生产订单 {aufnr} 的物料可用性检查完成，所有物料库存充足，可以进行生产。",
+                                    "aufnr": aufnr,
+                                    "items": all_materials_items,
+                                    "warehouse_list": warehouse_list  # 添加仓储管理列表
+                                }
+                            }
+                        else:
+                            # 有物料不足，返回失败结果
+                            not_enough_items = [item for item in all_materials_items if not item.get("is_available", False)]
+                            material_names = [item.get("maktx", item.get("matnr", "")) for item in not_enough_items]
+                            material_names_str = "、".join(material_names[:5])  # 最多显示5个物料
+                            if len(not_enough_items) > 5:
+                                material_names_str += f"等{len(not_enough_items)}个物料"
+                            
+                            return {
+                                "success": True,
+                                "intent": intent,
+                                "data": {
+                                    "type": "production_order_material_check_failed",
+                                    "message": f"生产订单 {aufnr} 的物料可用性检查未通过，物料{material_names_str}库存不足。",
+                                    "aufnr": aufnr,
+                                    "items": all_materials_items
+                                }
+                            }
+                    else:
+                        # 齐套检查失败，有物料不足
+                        # 获取order_info中的resb_list和mareq_items来补充字段
+                        order_info = check_result.get("order_info", {})
+                        resb_list = order_info.get("resb_list", [])
+                        mareq_items = order_info.get("mareq_items", [])
+                        
+                        # 构建物料映射表，方便快速查找
+                        # 使用matnr作为key，如果有多个记录，使用第一个匹配的
+                        resb_map = {}
+                        for resb in resb_list:
+                            matnr = resb.get("matnr")
+                            if matnr and matnr not in resb_map:
+                                resb_map[matnr] = resb
+                        
+                        # 优先使用mareq_items，因为它包含了更完整的信息
+                        mareq_map = {}
+                        for mareq in mareq_items:
+                            matnr = mareq.get("matnr")
+                            if matnr and matnr not in mareq_map:
+                                mareq_map[matnr] = mareq
+                        
+                        # 构建查询库存的参数列表（使用mandt字段）
+                        inventory_query_list = []
+                        for item in not_enough_list:
+                            matnr = item.get("matnr")
+                            # 从resb_list或mareq_items中查找对应物料的详细信息
+                            resb_info = resb_map.get(matnr)
+                            mareq_info = mareq_map.get(matnr)
+                            
+                            # 优先使用mareq_info，因为它包含了更完整的信息（包括werks和lgort）
+                            source_info = mareq_info or resb_info or {}
+                            
+                            # 构建库存查询参数
+                            werks = source_info.get("werks")
+                            if werks:
+                                inventory_query_list.append({
+                                    "mandt": source_info.get("mandt", "600"),  # 默认mandt
+                                    "matnr": matnr,
+                                    "werks": werks,
+                                    "lgort": source_info.get("lgort") or ""
+                                })
+                        
+                        # 查询库存信息（如果有物料需要查询）
+                        inventory_map = {}
+                        if inventory_query_list:
+                            try:
+                                inventory_result = await sd_service._request(
+                                    method="POST",
+                                    path="/sinocst-module-wm/sinocst-mard/mard/getStatusById",
+                                    json=inventory_query_list
+                                )
+                                if inventory_result.get("code") == 200:
+                                    inventory_data = inventory_result.get("data", [])
+                                    # 建立映射：key = matnr
+                                    for inv in inventory_data:
+                                        matnr_key = inv.get("matnr")
+                                        if matnr_key:
+                                            inventory_map[matnr_key] = inv
+                            except Exception as e:
+                                logger.warning(f"查询库存信息失败: {e}")
+                                # 查询失败不影响主流程，继续使用空数据
+                        
+                        # 格式化不足的物料信息
+                        not_enough_materials = []
+                        for item in not_enough_list:
+                            matnr = item.get("matnr")
+                            maktx = item.get("maktx") or ""
+                            
+                            # 从resb_list或mareq_items中查找对应物料的详细信息
+                            resb_info = resb_map.get(matnr)
+                            mareq_info = mareq_map.get(matnr)
+                            
+                            # 优先使用mareq_info，因为它包含了更完整的信息
+                            source_info = mareq_info or resb_info or {}
+                            
+                            werks = source_info.get("werks") or ""
+                            lgort = source_info.get("lgort") or ""
+                            meins = source_info.get("erfme") or source_info.get("meins") or ""
+                            # 确保bdmng是数字类型
+                            bdmng_raw = source_info.get("bdmng") or source_info.get("plmng") or 0
+                            try:
+                                bdmng = float(bdmng_raw) if bdmng_raw else 0
+                            except (ValueError, TypeError):
+                                bdmng = 0
+                            
+                            # 查找库存信息（先尝试精确匹配，再尝试只匹配matnr）
+                            inventory_info = None
+                            if lgort and werks:
+                                key = f"{matnr}-{werks}-{lgort}"
+                                inventory_info = inventory_map.get(key)
+                            if not inventory_info and werks:
+                                key = f"{matnr}-{werks}"
+                                inventory_info = inventory_map.get(key)
+                            if not inventory_info:
+                                inventory_info = inventory_map.get(matnr) or {}
+                            
+                            # 修复：优先使用库存查询返回的lgort（实际有库存的库存地点）
+                            if inventory_info and inventory_info.get("lgort"):
+                                lgort = inventory_info.get("lgort")
+                                logger.info(f"物料 {matnr} 使用库存查询返回的库存地点：{lgort}")
+                            
+                            # 确保库存数量是数字类型
+                            labst_raw = inventory_info.get("labst") or 0
+                            speme_raw = inventory_info.get("speme") or 0
+                            insme_raw = inventory_info.get("insme") or 0
+                            try:
+                                labst = float(labst_raw) if labst_raw else 0
+                            except (ValueError, TypeError):
+                                labst = 0
+                            try:
+                                speme = float(speme_raw) if speme_raw else 0
+                            except (ValueError, TypeError):
+                                speme = 0
+                            try:
+                                insme = float(insme_raw) if insme_raw else 0
+                            except (ValueError, TypeError):
+                                insme = 0
+                            
+                            # 计算实际可用库存 = 非限制库存 - 冻结库存
+                            actual_available_qty = max(0, labst - speme)
+                            
+                            # 构建物料项数据
+                            material_item = {
+                                "matnr": matnr,
+                                "matnr_name": maktx,  # 前端使用matnr_name字段
+                                "maktx": maktx,  # 保留maktx字段以兼容
+                                "werks": werks,
+                                "lgort": lgort,
+                                "meins": meins,
+                                "need_qty": bdmng,
+                                "labst": labst,
+                                "speme": speme,
+                                "insme": insme,
+                                "actual_available_qty": actual_available_qty,
+                                "is_available": False,  # 因为这是not_enough_list中的物料
+                                "relatnr": item.get("relatnr"),  # 关联订单号
+                                "rspos": source_info.get("rspos") or "",  # 预留项目号
+                                "message": f"库存不足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                            }
+                            not_enough_materials.append(material_item)
+                        
+                        material_names = [item.get("maktx", item.get("matnr", "")) for item in not_enough_list]
+                        material_names_str = "、".join(material_names[:5])  # 最多显示5个物料
+                        if len(not_enough_list) > 5:
+                            material_names_str += f"等{len(not_enough_list)}个物料"
+                        
+                        return {
+                            "success": True,
+                            "intent": intent,
+                            "data": {
+                                "type": "production_order_material_check_failed",
+                                "message": f"生产订单 {aufnr} 的物料可用性检查未通过，物料{material_names_str}库存不足。",
+                                "aufnr": aufnr,
+                                "items": not_enough_materials
+                            }
+                        }
+                else:
+                    error_msg = check_result.get("msg", "物料可用性检查失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "production_order_material_check_failed",
+                            "message": f"生产订单 {aufnr} 的物料可用性检查失败：{error_msg}",
+                            "aufnr": aufnr
+                        }
+                    }
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"生产订单物料可用性检查失败: {error_msg}", exc_info=True)
+                
+                # 检查是否是服务连接错误
+                if "Connection reset" in error_msg or "Connection" in error_msg or "连接" in error_msg:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "production_order_material_check_failed",
+                            "message": f"生产订单 {aufnr} 的物料可用性检查失败：无法连接到后端服务（可能是sinocst-master-data服务未正常运行或网络连接问题）。错误详情：{error_msg}",
+                            "aufnr": aufnr
+                        }
+                    }
+                elif "获取生产订单详情失败" in error_msg:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "production_order_material_check_failed",
+                            "message": f"{error_msg}。请确认生产订单号是否正确，或生产订单是否存在。",
+                            "aufnr": aufnr
+                        }
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "production_order_material_check_failed",
+                            "message": f"生产订单 {aufnr} 的物料可用性检查时出错：{error_msg}",
+                            "aufnr": aufnr
+                        }
+                    }
         
         elif intent == "POST_DELIVERY":
             # 交货单过账
@@ -816,14 +1443,31 @@ async def sd_ai_query(
         
         elif intent == "COPY_ORDER":
             # 根据指定订单复制创建新订单
-            # 优先使用LLM提取的订单号，否则使用规则提取
-            vbeln = extracted.get("vbeln") or _extract_order_number(query)
+            # 优先从用户查询中直接提取订单号（最准确），然后使用LLM提取，最后使用规则提取
+            # 注意：不要使用上下文中的订单号，因为用户可能想复制其他订单
+            vbeln = None
+            
+            # 1. 优先从用户查询中直接提取（最准确）
+            direct_extract = _extract_order_number(query)
+            if direct_extract:
+                vbeln = direct_extract
+                logger.info(f"从用户查询中直接提取到订单号: {vbeln}")
+            
+            # 2. 如果直接提取失败，使用LLM提取的结果
+            if not vbeln and extracted.get("vbeln"):
+                vbeln = extracted.get("vbeln")
+                logger.info(f"使用LLM提取的订单号: {vbeln}")
+            
+            # 3. 如果都失败，返回错误
             if not vbeln:
+                logger.warning(f"无法从查询中提取订单号: {query}")
                 return {
                     "success": False,
                     "intent": intent,
                     "message": "请提供要复制的订单号，例如：根据订单VB2025000091复制并创建新订单"
                 }
+            
+            logger.info(f"准备复制订单: {vbeln}, 用户查询: {query}")
             
             try:
                 # 获取源订单详情
@@ -845,16 +1489,33 @@ async def sd_ai_query(
                         "message": f"订单{vbeln}不存在或无法获取订单信息"
                     }
                 
+                # 记录源订单信息
+                logger.info(f"获取到源订单 {vbeln} 的详情，订单类型: {source_order.get('auart')}, 客户: {source_order.get('kunnrAgvName')}")
+                
                 # 检查源订单是否有行项目
-                if not source_order.get("apList") or len(source_order.get("apList", [])) == 0:
+                ap_list = source_order.get("apList", [])
+                if not ap_list or len(ap_list) == 0:
                     return {
                         "success": False,
                         "intent": intent,
                         "message": f"源订单{vbeln}没有行项目数据，无法复制创建新订单。请选择有行项目的订单进行复制。"
                     }
                 
+                # 记录源订单的行项目详情
+                logger.info(f"源订单 {vbeln} 有 {len(ap_list)} 个行项目:")
+                for idx, item in enumerate(ap_list):
+                    logger.info(f"  行项目 {idx + 1}: posnr={item.get('posnr')}, matnr={item.get('matnr')}, maktx={item.get('maktx')}, zmeng={item.get('zmeng')}, kwmeng={item.get('kwmeng')}")
+                
                 # 复制订单数据
+                logger.info(f"开始复制订单数据，源订单行项目数量: {len(ap_list)}")
                 new_order_data = _copy_order_data(source_order, query)
+                logger.info(f"复制完成，新订单行项目数量: {len(new_order_data.get('apList', []))}")
+                
+                # 记录新订单的行项目详情用于调试
+                if new_order_data.get('apList'):
+                    logger.info("新订单的行项目详情:")
+                    for idx, item in enumerate(new_order_data.get('apList', [])):
+                        logger.info(f"  行项目 {idx + 1}: matnr={item.get('matnr')}, maktx={item.get('maktx')}, zmeng={item.get('zmeng')}, kwmeng={item.get('kwmeng')}, menge={item.get('menge')}")
                 
                 # 如果指定了销售办事处关键词，查找并设置销售办事处
                 if "_sales_office_keyword" in new_order_data:
@@ -867,6 +1528,18 @@ async def sd_ai_query(
                         logger.info(f"已设置销售办事处为：{new_order_data['vkbur']} - {new_order_data.get('txnamSdb', '')}")
                     else:
                         logger.warning(f"未找到包含'{keyword}'的销售办事处，保持原订单的销售办事处")
+                
+                # 如果指定了销售组关键词，查找并设置销售组
+                if "_sales_group_keyword" in new_order_data:
+                    keyword = new_order_data.pop("_sales_group_keyword")
+                    sales_group = await sd_service.get_sales_group_by_name(keyword)
+                    
+                    if sales_group:
+                        new_order_data["vkgrp"] = sales_group.get("vkgrp")
+                        new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
+                        logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
+                    else:
+                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组")
                 
                 # 创建新订单
                 create_result = await sd_service.create_sales_order(new_order_data)
@@ -945,6 +1618,148 @@ async def sd_ai_query(
         
         elif intent == "CREATE_SALES_ORDER":
             # 创建销售订单（基于昨天的最后一个订单复制）
+            # 但是，如果提取到了订单号，应该使用COPY_ORDER逻辑
+            vbeln_from_extract = extracted.get("vbeln") or _extract_order_number(query)
+            if vbeln_from_extract:
+                logger.info(f"虽然识别为CREATE_SALES_ORDER，但提取到了订单号 {vbeln_from_extract}，改用COPY_ORDER逻辑")
+                # 改用COPY_ORDER逻辑
+                intent = "COPY_ORDER"
+                # 跳转到COPY_ORDER的处理逻辑（需要重新组织代码结构）
+                # 这里先处理COPY_ORDER逻辑
+                try:
+                    # 获取源订单详情
+                    source_order_result = await sd_service.get_order_detail(vbeln_from_extract)
+                    
+                    if source_order_result.get("code") != 200:
+                        error_msg = source_order_result.get("msg", "获取订单详情失败")
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"获取订单{vbeln_from_extract}详情失败：{error_msg}"
+                        }
+                    
+                    source_order = source_order_result.get("data")
+                    if not source_order:
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"订单{vbeln_from_extract}不存在或无法获取订单信息"
+                        }
+                    
+                    # 记录源订单信息
+                    logger.info(f"获取到源订单 {vbeln_from_extract} 的详情，订单类型: {source_order.get('auart')}, 客户: {source_order.get('kunnrAgvName')}")
+                    
+                    # 检查源订单是否有行项目
+                    ap_list = source_order.get("apList", [])
+                    if not ap_list or len(ap_list) == 0:
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"源订单{vbeln_from_extract}没有行项目数据，无法复制创建新订单。请选择有行项目的订单进行复制。"
+                        }
+                    
+                    # 记录源订单的行项目详情
+                    logger.info(f"源订单 {vbeln_from_extract} 有 {len(ap_list)} 个行项目:")
+                    for idx, item in enumerate(ap_list):
+                        logger.info(f"  行项目 {idx + 1}: posnr={item.get('posnr')}, matnr={item.get('matnr')}, maktx={item.get('maktx')}, zmeng={item.get('zmeng')}, kwmeng={item.get('kwmeng')}")
+                    
+                    # 复制订单数据
+                    logger.info(f"开始复制订单数据，源订单行项目数量: {len(ap_list)}")
+                    new_order_data = _copy_order_data(source_order, query)
+                    logger.info(f"复制完成，新订单行项目数量: {len(new_order_data.get('apList', []))}")
+                    
+                    # 记录新订单的行项目详情用于调试
+                    if new_order_data.get('apList'):
+                        logger.info("新订单的行项目详情:")
+                        for idx, item in enumerate(new_order_data.get('apList', [])):
+                            logger.info(f"  行项目 {idx + 1}: matnr={item.get('matnr')}, maktx={item.get('maktx')}, zmeng={item.get('zmeng')}, kwmeng={item.get('kwmeng')}, menge={item.get('menge')}")
+                    
+                    # 如果指定了销售办事处关键词，查找并设置销售办事处
+                    if "_sales_office_keyword" in new_order_data:
+                        keyword = new_order_data.pop("_sales_office_keyword")
+                        sales_office = await sd_service.get_sales_office_by_name(keyword)
+                        
+                        if sales_office:
+                            new_order_data["vkbur"] = sales_office.get("vkbur")
+                            new_order_data["txnamSdb"] = sales_office.get("txnamSdb") or sales_office.get("vtext", "")
+                            logger.info(f"已设置销售办事处为：{new_order_data['vkbur']} - {new_order_data.get('txnamSdb', '')}")
+                        else:
+                            logger.warning(f"未找到包含'{keyword}'的销售办事处，保持原订单的销售办事处")
+                    
+                    # 创建新订单
+                    create_result = await sd_service.create_sales_order(new_order_data)
+                    
+                    if create_result.get("code") == 200:
+                        new_vbeln = create_result.get("data")
+                        
+                        if not new_vbeln:
+                            logger.error(f"创建订单成功但未返回订单号，返回结果：{create_result}")
+                            return {
+                                "success": False,
+                                "intent": intent,
+                                "message": "创建订单成功，但未获取到订单号，请稍后查询订单列表确认。"
+                            }
+                        
+                        # 获取新创建的订单详情
+                        try:
+                            new_order_detail = await sd_service.get_order_detail(new_vbeln)
+                            order_data = new_order_detail.get("data") if new_order_detail.get("code") == 200 else None
+                            
+                            if not order_data:
+                                logger.warning(f"订单 {new_vbeln} 创建成功，但获取订单详情失败：{new_order_detail}")
+                                return {
+                                    "success": True,
+                                    "intent": intent,
+                                    "data": {
+                                        "type": "order_created",
+                                        "order": None,
+                                        "message": f"基于订单{vbeln_from_extract}复制创建新订单成功！新订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
+                                        "vbeln": new_vbeln,
+                                        "source_vbeln": vbeln_from_extract
+                                    }
+                                }
+                            
+                            return {
+                                "success": True,
+                                "intent": intent,
+                                "data": {
+                                    "type": "order_created",
+                                    "order": order_data,
+                                    "message": f"基于订单{vbeln_from_extract}复制创建新订单成功！新订单号：{new_vbeln}",
+                                    "vbeln": new_vbeln,
+                                    "source_vbeln": vbeln_from_extract
+                                }
+                            }
+                        except Exception as e:
+                            logger.error(f"获取订单 {new_vbeln} 详情失败: {str(e)}", exc_info=True)
+                            return {
+                                "success": True,
+                                "intent": intent,
+                                "data": {
+                                    "type": "order_created",
+                                    "order": None,
+                                    "message": f"基于订单{vbeln_from_extract}复制创建新订单成功！新订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
+                                    "vbeln": new_vbeln,
+                                    "source_vbeln": vbeln_from_extract
+                                }
+                            }
+                    else:
+                        error_msg = create_result.get("msg", "创建销售订单失败")
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"创建销售订单失败：{error_msg}"
+                        }
+                        
+                except Exception as e:
+                    logger.error(f"复制创建销售订单失败: {str(e)}", exc_info=True)
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"复制创建销售订单时出错：{str(e)}"
+                    }
+            
+            # 如果没有提取到订单号，使用原来的逻辑（基于昨天的最后一个订单）
             try:
                 # 获取昨天的最后一个订单
                 yesterday_order = await sd_service.get_yesterday_last_order()
@@ -984,6 +1799,18 @@ async def sd_ai_query(
                         logger.info(f"已设置销售办事处为：{new_order_data['vkbur']} - {new_order_data.get('txnamSdb', '')}")
                     else:
                         logger.warning(f"未找到包含'{keyword}'的销售办事处，保持原订单的销售办事处")
+                
+                # 如果指定了销售组关键词，查找并设置销售组
+                if "_sales_group_keyword" in new_order_data:
+                    keyword = new_order_data.pop("_sales_group_keyword")
+                    sales_group = await sd_service.get_sales_group_by_name(keyword)
+                    
+                    if sales_group:
+                        new_order_data["vkgrp"] = sales_group.get("vkgrp")
+                        new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
+                        logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
+                    else:
+                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组")
                 
                 # 创建新订单
                 create_result = await sd_service.create_sales_order(new_order_data)
@@ -1373,12 +2200,79 @@ def _copy_order_data(order_data: Dict[str, Any], query: str) -> Dict[str, Any]:
     if sales_office_keyword:
         new_order["_sales_office_keyword"] = sales_office_keyword
     
+    # 从查询中提取销售组信息
+    sales_group_keyword = None
+    if "销售组" in query or "销售组改为" in query or ("改为" in query and "销售组" in query):
+        # 提取销售组名称（在"改为"、"销售组改为"等关键词之后）
+        # 支持引号中的内容，如："销售组改为"经销商销售组""
+        # 支持带空格的词组，如："销售组改为经销商销售组"
+        patterns = [
+            r"销售组改为\s*[""']([^""']+)[""']",  # 匹配引号中的完整内容（优先匹配）
+            r"改为\s*[""']([^""']+)[""']",  # 匹配引号中的完整内容（优先匹配）
+            r"销售组改为[：:\s]*([^，,。.\n并]+)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文，冒号可选）
+            r"改为[：:\s]+([^，,。.\n并]+)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文）
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query)
+            if match:
+                sales_group_keyword = match.group(1).strip()
+                # 移除可能的引号
+                sales_group_keyword = sales_group_keyword.strip('"').strip("'").strip()
+                if sales_group_keyword:
+                    logger.info(f"使用正则表达式 '{pattern}' 提取到销售组关键词: {sales_group_keyword}")
+                    break
+    
+    # 如果指定了销售组关键词，需要异步获取（这里先设置一个标记，由调用方处理）
+    if sales_group_keyword:
+        new_order["_sales_group_keyword"] = sales_group_keyword
+        logger.info(f"提取到销售组关键词: {sales_group_keyword}")
+    
     # 复制行项目数据（如果存在）
     if "apList" in new_order and new_order["apList"]:
-        for item in new_order["apList"]:
-            # 清空行项目号，让系统自动生成
-            if "posnr" in item:
-                item["posnr"] = None
+        # 确保apList是一个列表
+        if not isinstance(new_order["apList"], list):
+            logger.warning(f"apList不是列表类型: {type(new_order['apList'])}")
+            new_order["apList"] = []
+        else:
+            # 深拷贝每个行项目，确保所有字段都被正确复制
+            copied_items = []
+            for idx, item in enumerate(new_order["apList"]):
+                if not isinstance(item, dict):
+                    logger.warning(f"行项目 {idx + 1} 不是字典类型: {type(item)}, 跳过")
+                    continue
+                
+                # 深拷贝行项目
+                import copy
+                copied_item = copy.deepcopy(item)
+                
+                # 清空行项目号，让系统自动生成
+                if "posnr" in copied_item:
+                    copied_item["posnr"] = None
+                
+                # 清空订单号（行项目中的vbeln应该使用新订单号）
+                if "vbeln" in copied_item:
+                    copied_item["vbeln"] = None
+                
+                # 确保关键字段存在（物料号、数量等）
+                matnr = copied_item.get("matnr")
+                zmeng = copied_item.get("zmeng")
+                kwmeng = copied_item.get("kwmeng")
+                
+                if not matnr:
+                    logger.warning(f"行项目 {idx + 1} 缺少物料号(matnr): {copied_item}")
+                else:
+                    logger.debug(f"行项目 {idx + 1} 复制: matnr={matnr}, zmeng={zmeng}, kwmeng={kwmeng}")
+                
+                # 确保数量字段存在（优先使用zmeng，如果没有则使用kwmeng）
+                if not zmeng and kwmeng:
+                    copied_item["zmeng"] = kwmeng
+                    logger.debug(f"行项目 {idx + 1} 使用kwmeng作为zmeng: {kwmeng}")
+                
+                copied_items.append(copied_item)
+            
+            # 更新apList
+            new_order["apList"] = copied_items
+            logger.info(f"已复制 {len(copied_items)} 个行项目")
     
     return new_order
 

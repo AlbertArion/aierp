@@ -28,6 +28,8 @@ class SDService:
         self.service_urls = {
             "sinocst-module-wm": "http://localhost:9112",
             "sinocst-master-data": "http://localhost:9100",
+            "sinocst-module-pp": "http://localhost:9110",
+            "sinocst-module-me": "http://localhost:9999",
         }
     
     def set_token(self, token: str):
@@ -390,10 +392,37 @@ class SDService:
         
         mard_list = mard_result.get("data", [])
         if not mard_list:
+            # 如果查询库存返回空列表，说明没有库存记录
+            # 返回 ATP 检查失败的结果，包含每个物料的检查信息
+            items = []
+            for ps in ps_list:
+                matnr = ps.get("matnr")
+                werks = ps.get("werks")
+                lgort = ps.get("lgort")
+                need_qty = float(ps.get("lfimg") or ps.get("zmeng") or 0)
+                
+                if not matnr or not werks:
+                    continue
+                
+                items.append({
+                    "matnr": matnr,
+                    "matnr_name": ps.get("maktx") or "",
+                    "werks": werks,
+                    "lgort": lgort or "",
+                    "need_qty": need_qty,
+                    "labst": 0,  # 总库存
+                    "speme": 0,  # 冻结库存
+                    "available_qty": 0,  # 可用库存
+                    "reserved_qty": 0,  # 预留库存
+                    "actual_available_qty": 0,  # 实际可用库存
+                    "is_available": False,
+                    "message": f"物料 {matnr} 在工厂 {werks}{' 库存地点 ' + lgort if lgort else ''} 未维护库存"
+                })
+            
             return {
                 "success": False,
-                "message": "查询库存失败",
-                "items": []
+                "message": "ATP检查失败：未找到物料库存记录",
+                "items": items
             }
         
         # 构建库存映射表
@@ -487,11 +516,13 @@ class SDService:
                     continue
                 else:
                     # 没有找到任何库存
+                    # 如果订单行项目的库存地点为空，显示"所有库存地点"
+                    lgort_display = lgort if lgort else "所有库存地点"
                     items.append({
                         "matnr": matnr,
                         "matnr_name": ps.get("maktx") or "",
                         "werks": werks,
-                        "lgort": lgort or "",
+                        "lgort": lgort_display,
                         "need_qty": need_qty,
                         "labst": 0,  # 总库存
                         "speme": 0,  # 冻结库存
@@ -499,7 +530,7 @@ class SDService:
                         "reserved_qty": 0,  # 预留库存
                         "actual_available_qty": 0,  # 实际可用库存
                         "is_available": False,
-                        "message": f"物料 {matnr} 在工厂 {werks}{' 库存地点 ' + lgort if lgort else ''} 未维护库存"
+                        "message": f"物料 {matnr} 在工厂 {werks}{' 库存地点 ' + lgort if lgort else ' 所有库存地点'} 未维护库存"
                     })
                     all_available = False
                     continue
@@ -639,6 +670,36 @@ class SDService:
         
         return None
     
+    async def get_sales_group_by_name(self, name_keyword: str) -> Optional[Dict[str, Any]]:
+        """
+        根据名称关键词查找销售组
+        
+        Args:
+            name_keyword: 名称关键词（如"经销商销售组"）
+        
+        Returns:
+            销售组信息，如果不存在则返回None
+        """
+        # 获取销售组列表
+        result = await self._request(
+            method="GET",
+            path="/sinocst-master-data/tvkgr/list",
+            params={}
+        )
+        
+        data = result.get("data", {})
+        records = data.get("records", []) or data.get("data", [])
+        
+        # 查找名称包含关键词的销售组
+        for group in records:
+            bezei = group.get("bezei", "") or ""
+            vkgrp = group.get("vkgrp", "") or ""
+            # 匹配名称或代码
+            if name_keyword in bezei or name_keyword in vkgrp:
+                return group
+        
+        return None
+    
     async def post_delivery(self, vbeln: str) -> Dict[str, Any]:
         """
         交货单过账
@@ -694,4 +755,147 @@ class SDService:
             path="/sinocst-module-sd/invoice/create",
             json=invoice_data
         )
+    
+    async def get_production_order_detail(self, aufnr: str) -> Dict[str, Any]:
+        """
+        获取生产订单详情
+        
+        Args:
+            aufnr: 生产订单号
+        
+        Returns:
+            生产订单详情（包含resbList等）
+        """
+        return await self._request(
+            method="GET",
+            path="/sinocst-module-pp/productOrder/detail",
+            params={"aufnr": aufnr}
+        )
+    
+    async def check_production_order_material_availability(self, aufnr: str) -> Dict[str, Any]:
+        """
+        检查生产订单物料可用性（齐套性检查）
+        
+        Args:
+            aufnr: 生产订单号
+        
+        Returns:
+            齐套检查结果
+        """
+        # 先获取生产订单详情（包含BOM组件resbList）
+        try:
+            detail_result = await self.get_production_order_detail(aufnr)
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"获取生产订单详情失败: {error_msg}", exc_info=True)
+            raise Exception(f"获取生产订单 {aufnr} 详情失败：{error_msg}")
+        
+        if detail_result.get("code") != 200:
+            error_msg = detail_result.get("msg", "未知错误")
+            logger.error(f"获取生产订单详情返回错误: code={detail_result.get('code')}, msg={error_msg}")
+            raise Exception(f"获取生产订单详情失败：{error_msg}")
+        
+        order_data = detail_result.get("data")
+        if not order_data:
+            raise Exception(f"生产订单 {aufnr} 不存在或无法获取订单信息")
+        
+        # 获取BOM组件列表（resbList）
+        resb_list = order_data.get("resbList", [])
+        if not resb_list:
+            logger.warning(f"生产订单 {aufnr} 没有BOM组件数据（resbList为空）")
+            return {
+                "code": 400,  # 改为400，表示请求错误（无法检查）
+                "success": False,
+                "data": [],
+                "message": "生产订单没有BOM组件数据，无法进行物料可用性检查",
+                "error_type": "NO_BOM_DATA"  # 添加错误类型标识
+            }
+        
+        # 获取生产订单数量（gamng：总订单数量）
+        # 如果gamng为空，尝试其他可能的字段名
+        order_quantity = order_data.get("gamng") or order_data.get("gmenge") or order_data.get("zmeng") or 0
+        try:
+            order_quantity = float(order_quantity) if order_quantity else 0
+        except (ValueError, TypeError):
+            order_quantity = 0
+        
+        # 如果订单数量为0或未找到，记录警告但继续处理（使用bdmng的原始值）
+        if order_quantity == 0:
+            logger.warning(f"生产订单 {aufnr} 的订单数量（gamng/gmenge/zmeng）为0或未找到，将使用BOM组件原始数量")
+        
+        # 将resbList转换为mareqItem格式（用于齐套检查）
+        mareq_items = []
+        for resb in resb_list:
+            # 跳过没有物料号或需求数量为0的组件
+            matnr = resb.get("matnr")
+            # resb中的bdmng是每个单位父物料所需的组件数量
+            bdmng_per_unit = resb.get("bdmng") or resb.get("erfmg") or 0
+            if not matnr or bdmng_per_unit == 0:
+                continue
+            
+            # 计算总需求数量 = 每个单位所需数量 × 生产订单数量
+            # 如果订单数量为0，使用原始的bdmng_per_unit（向后兼容）
+            if order_quantity > 0:
+                total_required_qty = float(bdmng_per_unit) * order_quantity
+            else:
+                total_required_qty = float(bdmng_per_unit)
+            
+            # resb的字段：matnr, werks, lgort, bdmng（每个单位的需求数量）, erfme（单位）等
+            # mareqItem需要的字段：matnr, werks, lgort, plmng（计划领料数，使用总需求数量）, bdmng等
+            # 注意：不包含mandt字段，mandt将从请求头X-Mandt获取
+            mareq_item = {
+                "matnr": matnr,
+                "werks": resb.get("werks") or order_data.get("werks"),
+                "lgort": resb.get("lgort") or order_data.get("lgort"),
+                "plmng": total_required_qty,  # 计划领料数使用总需求数量（每个单位数量 × 订单数量）
+                "bdmng": total_required_qty,  # 需求数量（总需求数量）
+                "erfme": resb.get("erfme") or resb.get("meins"),  # 单位
+                "maktx": resb.get("maktx"),  # 物料描述
+                "rsnum": resb.get("rsnum"),  # 预留号
+                "rspos": resb.get("rspos"),  # 预留项目号
+                "relatnr": aufnr  # 关联订单号（生产订单号）
+                # 不包含mandt字段，mandt将从请求头X-Mandt获取，避免传递错误的mandt值
+            }
+            # 只添加有效的mareq_item（必须有物料号和工厂）
+            if mareq_item.get("matnr") and mareq_item.get("werks"):
+                mareq_items.append(mareq_item)
+        
+        # 调用齐套检查API
+        try:
+            check_result = await self._request(
+                method="POST",
+                path="/sinocst-module-me/sinocst-mareqHeader/mareqItem/checkBatch",
+                json=mareq_items
+            )
+            # 在返回结果中添加order_info，包含resb_list和mareq_items，以便后续补充字段
+            if isinstance(check_result, dict):
+                check_result["order_info"] = {
+                    "aufnr": aufnr,
+                    "resb_list": resb_list,
+                    "mareq_items": mareq_items,
+                    "order_quantity": order_quantity  # 添加订单数量，以便后续计算时使用
+                }
+            return check_result
+        except Exception as e:
+            error_msg = str(e)
+            # 如果是连接错误，返回友好的提示信息，而不是抛出异常
+            if "无法连接到SD服务" in error_msg or "ConnectError" in error_msg or "connection" in error_msg.lower():
+                logger.warning(f"物料可用性检查服务不可用: {error_msg}")
+                return {
+                    "code": 503,  # 503 Service Unavailable
+                    "success": False,
+                    "data": [],
+                    "message": f"物料可用性检查服务暂时不可用（sinocst-module-me服务未启动或无法连接）。生产订单 {aufnr} 的BOM组件信息已获取，但无法进行可用性检查。请确保物料需求管理服务（sinocst-module-me）已启动并运行在端口9999。",
+                    "error_type": "SERVICE_UNAVAILABLE",
+                    "order_info": {
+                        "aufnr": aufnr,
+                        "resb_count": len(resb_list),
+                        "mareq_items_count": len(mareq_items),
+                        "resb_list": resb_list,  # 提供BOM组件信息，即使无法检查可用性
+                        "order_quantity": order_quantity  # 添加订单数量
+                    }
+                }
+            else:
+                # 其他错误继续抛出
+                raise
 

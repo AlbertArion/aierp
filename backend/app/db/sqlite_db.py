@@ -860,6 +860,173 @@ class SQLiteDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_jest_objnr ON jest(objnr)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_makt_matnr ON makt(matnr)')
 
+        # ========== 业务指标问题识别相关表 ==========
+        # 业务指标定义表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_metric_definition (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric_code TEXT NOT NULL UNIQUE,
+                metric_name TEXT NOT NULL,
+                metric_category TEXT NOT NULL,
+                metric_type TEXT NOT NULL,
+                unit TEXT,
+                calculation_formula TEXT,
+                data_source_table TEXT,
+                data_source_query TEXT,
+                target_value REAL,
+                warning_threshold REAL,
+                critical_threshold REAL,
+                is_enabled INTEGER DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT,
+                updated_by TEXT
+            )
+        ''')
+
+        # 指标影响因素配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_metric_factor (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric_id INTEGER NOT NULL,
+                factor_code TEXT NOT NULL,
+                factor_name TEXT NOT NULL,
+                factor_type TEXT NOT NULL,
+                impact_formula TEXT,
+                business_operation_type TEXT,
+                weight REAL DEFAULT 1.0,
+                is_enabled INTEGER DEFAULT 1,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (metric_id) REFERENCES biz_metric_definition(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 改进措施配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_improvement_measure (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric_id INTEGER NOT NULL,
+                measure_code TEXT NOT NULL,
+                measure_name TEXT NOT NULL,
+                measure_type TEXT,
+                target_metric_id INTEGER,
+                expected_improvement_formula TEXT,
+                business_operation_template TEXT,
+                priority INTEGER DEFAULT 0,
+                is_enabled INTEGER DEFAULT 1,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (metric_id) REFERENCES biz_metric_definition(id) ON DELETE CASCADE,
+                FOREIGN KEY (target_metric_id) REFERENCES biz_metric_definition(id) ON DELETE SET NULL
+            )
+        ''')
+
+        # 业务操作与指标关联表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_operation_metric_relation (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_type TEXT NOT NULL,
+                operation_code TEXT NOT NULL,
+                metric_id INTEGER NOT NULL,
+                impact_formula TEXT,
+                impact_type TEXT,
+                is_enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (metric_id) REFERENCES biz_metric_definition(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 指标值历史记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_metric_value_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric_id INTEGER NOT NULL,
+                metric_value REAL NOT NULL,
+                calculation_time TIMESTAMP NOT NULL,
+                data_snapshot TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (metric_id) REFERENCES biz_metric_definition(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 业务问题记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_issue_record (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                issue_code TEXT NOT NULL UNIQUE,
+                metric_id INTEGER NOT NULL,
+                issue_title TEXT NOT NULL,
+                issue_description TEXT,
+                severity TEXT NOT NULL,
+                severity_score INTEGER,
+                current_value REAL,
+                target_value REAL,
+                deviation REAL,
+                status TEXT DEFAULT 'active',
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TIMESTAMP,
+                responsible_person TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (metric_id) REFERENCES biz_metric_definition(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 操作影响记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_operation_impact_record (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_type TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                operation_time TIMESTAMP NOT NULL,
+                metric_id INTEGER NOT NULL,
+                impact_value REAL NOT NULL,
+                impact_type TEXT,
+                before_value REAL,
+                after_value REAL,
+                improvement_percent REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (metric_id) REFERENCES biz_metric_definition(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 改进措施执行记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS biz_measure_execution_record (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                measure_id INTEGER NOT NULL,
+                issue_id INTEGER NOT NULL,
+                operation_id TEXT,
+                execution_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expected_improvement REAL,
+                actual_improvement REAL,
+                status TEXT DEFAULT 'executing',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (measure_id) REFERENCES biz_improvement_measure(id) ON DELETE CASCADE,
+                FOREIGN KEY (issue_id) REFERENCES biz_issue_record(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # 创建业务指标相关索引
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_metric_definition_category ON biz_metric_definition(metric_category)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_metric_definition_enabled ON biz_metric_definition(is_enabled)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_metric_factor_metric ON biz_metric_factor(metric_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_metric_factor_type ON biz_metric_factor(factor_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_improvement_measure_metric ON biz_improvement_measure(metric_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_operation_relation_type ON biz_operation_metric_relation(operation_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_operation_relation_metric ON biz_operation_metric_relation(metric_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_metric_value_history_metric_time ON biz_metric_value_history(metric_id, calculation_time DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_issue_record_metric_status ON biz_issue_record(metric_id, status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_issue_record_severity ON biz_issue_record(severity)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_operation_impact_operation ON biz_operation_impact_record(operation_type, operation_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_operation_impact_metric_time ON biz_operation_impact_record(metric_id, operation_time DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_measure_execution_issue ON biz_measure_execution_record(issue_id)')
+
         self.conn.commit()
 
         # 兼容新增列：为任务表补充文件路径列

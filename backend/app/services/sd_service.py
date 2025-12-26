@@ -30,6 +30,7 @@ class SDService:
             "sinocst-master-data": "http://localhost:9100",
             "sinocst-module-pp": "http://localhost:9110",
             "sinocst-module-me": "http://localhost:9999",
+            "sinocst-module-co": "http://localhost:9997",  # CO模块（成本核算）
         }
     
     def set_token(self, token: str):
@@ -343,6 +344,24 @@ class SDService:
             params={"vgbel": vbeln}
         )
     
+    async def get_internal_order_detail(self, aufnr: str) -> Dict[str, Any]:
+        """
+        获取内部订单详情
+        
+        Args:
+            aufnr: 内部订单号（12位数字，如808000000008）
+        
+        Returns:
+            内部订单详情数据
+        """
+        logger.info(f"查询内部订单详情: aufnr={aufnr}")
+        # 内部订单在CO模块（sinocst-module-co）
+        return await self._request(
+            method="GET",
+            path="/sinocst-module-co/internal-order/detail",
+            params={"orderNumber": aufnr}
+        )
+    
     async def check_atp_detailed(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         执行详细的ATP检查，返回每个物料的检查结果
@@ -488,6 +507,12 @@ class SDService:
                     # 使用汇总数据
                     labst = summary["labst"]
                     speme = summary["speme"]
+                    # 修复：冻结库存不应该是负数，如果为负数，说明数据异常
+                    if speme < 0:
+                        # 如果speme为负数，说明labst可能不准确，实际可用库存应该是|speme|
+                        if labst == 0:
+                            labst = abs(speme)
+                            speme = 0
                     available_qty = labst - speme
                     reserved_qty = 0  # 预留库存（暂时设为0）
                     actual_available_qty = available_qty - reserved_qty
@@ -538,6 +563,15 @@ class SDService:
             # 精确匹配成功，使用精确数据
             labst = float(mard.get("labst") or 0)  # 总库存（非限制库存）
             speme = float(mard.get("speme") or 0)  # 冻结库存
+            # 修复：冻结库存不应该是负数，如果为负数，说明数据异常
+            if speme < 0:
+                # 如果speme为负数，说明labst可能不准确，实际可用库存应该是|speme|
+                if labst == 0:
+                    labst = abs(speme)
+                    speme = 0
+                else:
+                    # labst不为0，但speme为负数，将speme设为0
+                    speme = 0
             available_qty = labst - speme  # 可用库存
             reserved_qty = 0  # 预留库存（暂时设为0，实际应该查询）
             actual_available_qty = available_qty - reserved_qty  # 实际可用库存
@@ -898,4 +932,253 @@ class SDService:
             else:
                 # 其他错误继续抛出
                 raise
+    
+    async def check_internal_order_material_availability(self, aufnr: str) -> Dict[str, Any]:
+        """
+        检查内部订单物料可用性（齐套性检查）
+        
+        Args:
+            aufnr: 内部订单号（12位数字，如808000000008）
+        
+        Returns:
+            齐套检查结果
+        """
+        # 先获取内部订单详情
+        try:
+            detail_result = await self.get_internal_order_detail(aufnr)
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"获取内部订单详情失败: {error_msg}", exc_info=True)
+            raise Exception(f"获取内部订单 {aufnr} 详情失败：{error_msg}")
+        
+        if detail_result.get("code") != 200:
+            error_msg = detail_result.get("msg", "未知错误")
+            logger.error(f"获取内部订单详情返回错误: code={detail_result.get('code')}, msg={error_msg}")
+            raise Exception(f"获取内部订单详情失败：{error_msg}")
+        
+        order_data = detail_result.get("data")
+        if not order_data:
+            raise Exception(f"内部订单 {aufnr} 不存在或无法获取订单信息")
+        
+        # 获取物料号和工厂
+        matnr = order_data.get("materialNumber") or order_data.get("matnr")
+        werks = order_data.get("plant") or order_data.get("werks")
+        
+        if not matnr:
+            raise Exception(f"内部订单 {aufnr} 未关联物料，无法进行齐套性检查")
+        if not werks:
+            raise Exception(f"内部订单 {aufnr} 未设置工厂，无法进行齐套性检查")
+        
+        # 获取内部订单数量（从销售订单行项目获取）
+        order_quantity = order_data.get("orderQuantity") or order_data.get("gamng") or order_data.get("menge") or 1
+        try:
+            order_quantity = float(order_quantity) if order_quantity else 1
+        except (ValueError, TypeError):
+            order_quantity = 1
+        
+        # 调用BOM展开接口获取BOM组件列表
+        try:
+            bom_result = await self._request(
+                method="GET",
+                path=f"/sinocst-module-co/internal-order/{aufnr}/bom-list",
+                params={}
+            )
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"获取内部订单BOM列表失败: {error_msg}", exc_info=True)
+            raise Exception(f"获取内部订单 {aufnr} BOM列表失败：{error_msg}")
+        
+        if bom_result.get("code") != 200:
+            error_msg = bom_result.get("msg", "未知错误")
+            logger.error(f"获取内部订单BOM列表返回错误: code={bom_result.get('code')}, msg={error_msg}")
+            raise Exception(f"获取内部订单BOM列表失败：{error_msg}")
+        
+        bom_list = bom_result.get("data") or []
+        # 如果BOM列表为空，尝试自动执行BOM展开
+        if not bom_list:
+            logger.info(f"内部订单 {aufnr} BOM列表为空，尝试自动执行BOM展开")
+            try:
+                # 调用BOM展开接口（POST方法）
+                bom_explode_result = await self._request(
+                    method="POST",
+                    path=f"/sinocst-module-co/internal-order/{aufnr}/bom-explode",
+                    json={}
+                )
+                
+                if bom_explode_result.get("code") == 200:
+                    bom_tree = bom_explode_result.get("data") or []
+                    if bom_tree:
+                        logger.info(f"内部订单 {aufnr} BOM展开成功，BOM树节点数: {len(bom_tree)}")
+                        # 调试：检查BOM树结构
+                        if bom_tree:
+                            first_node = bom_tree[0]
+                            logger.info(f"BOM树第一个节点: matnr={first_node.get('matnr')}, children数量={len(first_node.get('children', []))}")
+                        # 将BOM树形结构转换为列表格式
+                        bom_list = self._flatten_bom_tree_to_list(bom_tree)
+                        logger.info(f"内部订单 {aufnr} BOM树转换完成，共 {len(bom_list)} 个组件")
+                
+                # 如果BOM展开后仍然为空，检查是否是物料没有配置BOM
+                if not bom_list:
+                    logger.warning(f"内部订单 {aufnr} BOM展开后仍然没有组件数据")
+                    # 检查物料是否配置了BOM
+                    if not matnr:
+                        return {
+                            "code": 400,
+                            "success": False,
+                            "data": [],
+                            "message": f"内部订单 {aufnr} 未关联物料，无法进行齐套性检查。请先为内部订单关联物料。",
+                            "error_type": "NO_MATERIAL"
+                        }
+                    else:
+                        return {
+                            "code": 400,
+                            "success": False,
+                            "data": [],
+                            "message": f"物料 {matnr} 在工厂 {werks} 下未配置BOM或BOM中没有组件物料，无法进行齐套性检查。请检查物料主数据中的BOM配置。",
+                            "error_type": "NO_BOM_DATA"
+                        }
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"自动执行BOM展开失败: {error_msg}", exc_info=True)
+                # 如果自动展开失败，返回友好的错误信息
+                if not matnr:
+                    return {
+                        "code": 400,
+                        "success": False,
+                        "data": [],
+                        "message": f"内部订单 {aufnr} 未关联物料，无法进行齐套性检查。请先为内部订单关联物料。",
+                        "error_type": "NO_MATERIAL"
+                    }
+                else:
+                    return {
+                        "code": 400,
+                        "success": False,
+                        "data": [],
+                        "message": f"内部订单 {aufnr} 没有BOM组件数据，无法进行物料可用性检查。BOM展开失败：{error_msg}。请检查物料 {matnr} 在工厂 {werks} 下的BOM配置。",
+                        "error_type": "NO_BOM_DATA"
+                    }
+        
+        # 将BOM列表转换为mareqItem格式（用于齐套检查）
+        mareq_items = []
+        for bom_item in bom_list:
+            # 跳过没有物料号或需求数量为0的组件
+            component_matnr = bom_item.get("idnrk") or bom_item.get("matnr")
+            menge = bom_item.get("menge") or bom_item.get("bdmng") or 0
+            
+            if not component_matnr or menge == 0:
+                continue
+            
+            # 计算总需求数量 = BOM中的数量 × 内部订单数量
+            try:
+                total_required_qty = float(menge) * order_quantity
+            except (ValueError, TypeError):
+                total_required_qty = float(menge)
+            
+            # 构建mareqItem
+            mareq_item = {
+                "matnr": component_matnr,
+                "werks": bom_item.get("werks") or werks,
+                "lgort": bom_item.get("lgort") or "",
+                "plmng": total_required_qty,  # 计划领料数
+                "bdmng": total_required_qty,  # 需求数量
+                "erfme": bom_item.get("meins") or bom_item.get("erfme"),  # 单位
+                "maktx": bom_item.get("ojtxp") or bom_item.get("maktx"),  # 物料描述
+                "relatnr": aufnr  # 关联订单号（内部订单号）
+            }
+            # 只添加有效的mareq_item（必须有物料号和工厂）
+            if mareq_item.get("matnr") and mareq_item.get("werks"):
+                mareq_items.append(mareq_item)
+        
+        if not mareq_items:
+            logger.warning(f"内部订单 {aufnr} 没有有效的BOM组件数据")
+            return {
+                "code": 400,
+                "success": False,
+                "data": [],
+                "message": "内部订单没有有效的BOM组件数据，无法进行物料可用性检查",
+                "error_type": "NO_VALID_BOM_DATA"
+            }
+        
+        # 调用齐套检查API
+        try:
+            check_result = await self._request(
+                method="POST",
+                path="/sinocst-module-me/sinocst-mareqHeader/mareqItem/checkBatch",
+                json=mareq_items
+            )
+            # 在返回结果中添加order_info
+            if isinstance(check_result, dict):
+                check_result["order_info"] = {
+                    "aufnr": aufnr,
+                    "bom_list": bom_list,
+                    "mareq_items": mareq_items,
+                    "order_quantity": order_quantity
+                }
+            return check_result
+        except Exception as e:
+            error_msg = str(e)
+            # 如果是连接错误，返回友好的提示信息
+            if "无法连接到" in error_msg or "ConnectError" in error_msg or "connection" in error_msg.lower():
+                logger.warning(f"内部订单物料可用性检查服务不可用: {error_msg}")
+                return {
+                    "code": 503,
+                    "success": False,
+                    "data": [],
+                    "message": f"物料可用性检查服务暂时不可用（sinocst-module-me服务未启动或无法连接）。内部订单 {aufnr} 的BOM组件信息已获取，但无法进行可用性检查。请确保物料需求管理服务（sinocst-module-me）已启动并运行在端口9999。",
+                    "error_type": "SERVICE_UNAVAILABLE",
+                    "order_info": {
+                        "aufnr": aufnr,
+                        "bom_count": len(bom_list),
+                        "mareq_items_count": len(mareq_items),
+                        "bom_list": bom_list,
+                        "order_quantity": order_quantity
+                    }
+                }
+            else:
+                # 其他错误继续抛出
+                raise
+    
+    def _flatten_bom_tree_to_list(self, bom_tree: list, result: list = None) -> list:
+        """
+        将BOM树形结构转换为列表格式
+        
+        Args:
+            bom_tree: BOM树形结构（BomTreeDTO列表，根节点包含父物料，children包含组件）
+            result: 结果列表（递归使用）
+        
+        Returns:
+            BOM列表格式（BomListDTO列表）
+        """
+        if result is None:
+            result = []
+        
+        if not isinstance(bom_tree, list):
+            return result
+        
+        for node in bom_tree:
+            # 处理有idnrk的组件节点（BomChildrenDTO）
+            # 注意：根节点（BomTreeDTO）可能没有idnrk，只有children
+            node_idnrk = node.get("idnrk")
+            if node_idnrk:
+                bom_item = {
+                    "idnrk": node.get("idnrk"),
+                    "matnr": node.get("idnrk"),  # 兼容字段
+                    "ojtxp": node.get("idnrkMaktx") or node.get("idnrkMatkx") or node.get("potx1") or node.get("maktx") or "",
+                    "maktx": node.get("idnrkMaktx") or node.get("idnrkMatkx") or node.get("potx1") or node.get("maktx") or "",
+                    "menge": node.get("menge") or node.get("bdmng") or 0,
+                    "bdmng": node.get("menge") or node.get("bdmng") or 0,
+                    "meins": node.get("meins") or node.get("erfme") or "",
+                    "erfme": node.get("meins") or node.get("erfme") or "",
+                    "werks": node.get("pswrk") or node.get("werks") or "",
+                    "lgort": node.get("lgort") or "",
+                    "stufe": node.get("stufe") or "1"
+                }
+                result.append(bom_item)
+            
+            # 递归处理子节点（无论是根节点的children还是子节点的children）
+            children = node.get("children")
+            if children and isinstance(children, list) and len(children) > 0:
+                self._flatten_bom_tree_to_list(children, result)
+        
+        return result
 

@@ -10,6 +10,7 @@ import os
 import json
 import requests
 from app.services.sd_service import SDService
+from app.services.mm_service import MMService
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,38 @@ def get_sd_service(
         logger.debug(f"Token前20字符: {token[:20]}...")
     else:
         logger.warning("未收到有效的token请求头（检查了Authorization和Blade-Auth）")
+    
+    return service
+
+# 依赖注入：创建MMService实例，并传递token和租户信息
+def get_mm_service(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    blade_auth: Optional[str] = Header(None, alias="Blade-Auth"),
+    x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
+) -> MMService:
+    """创建MMService实例，并传递认证token和租户信息"""
+    service = MMService()
+    
+    # 优先从Authorization头获取token（bearer格式）
+    token = None
+    if authorization:
+        if authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", 1)[1].strip()
+    elif blade_auth:
+        if blade_auth.lower().startswith("bearer "):
+            token = blade_auth.split(" ", 1)[1].strip()
+        else:
+            token = blade_auth.strip()
+    
+    if token:
+        service.set_token(token)
+    
+    # 设置mandt和tenant_id
+    if x_mandt:
+        service.set_mandt(x_mandt)
+    if x_tenant_id:
+        service.set_tenant_id(x_tenant_id)
     
     return service
 
@@ -168,6 +201,36 @@ def _extract_internal_order_number(text: str) -> Optional[str]:
     
     return None
 
+def _extract_purchase_order_number(text: str) -> Optional[str]:
+    """
+    从文本中提取采购订单号（ebeln）
+    采购订单号通常是10位数字，如1000000040
+    
+    Returns:
+        采购订单号（如 "1000000040"），如果未找到则返回None
+    """
+    import re
+    # 匹配采购订单相关关键词后的数字
+    patterns = [
+        r'(?:采购订单|采购订单号)[\s:：]?(\d{10})',
+        r'采购订单\s*(\d{10})',
+        r'\b(1\d{9})\b',  # 10位数字，以1开头（采购订单编号范围）
+        r'\b(\d{10})\b',  # 10位数字（通用匹配，但需要上下文判断）
+    ]
+    
+    text_lower = text.lower()
+    # 如果明确提到"采购订单"，则提取10位数字
+    if "采购订单" in text_lower or "采购" in text_lower:
+        for pattern in patterns:
+            matches = re.findall(pattern, text)
+            if matches:
+                # 返回第一个匹配的10位数字
+                for match in matches:
+                    if len(match) == 10:
+                        return match
+    
+    return None
+
 async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
     """
     使用LLM识别用户意图（智能解析）
@@ -209,7 +272,9 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 15. NAVIGATE_DELIVERY - 跳转到交货单页面
 16. NAVIGATE_DOCUMENT_FLOW - 跳转到单据流页面
 17. QUERY_INTERNAL_ORDER - 查询内部订单详情（查看内部订单、内部订单详情、内部订单信息等，内部订单号通常是12位数字，如808000000008）
-18. SMALLTALK - 闲聊或询问如何使用
+18. QUERY_PRODUCTION_ORDER - 查询生产订单详情（查看生产订单、生产订单详情、生产订单信息等，生产订单号通常是10位数字，如8900000103）
+19. QUERY_PURCHASE_ORDER - 查询采购订单详情（查看采购订单、采购订单详情、采购订单信息等，采购订单号通常是10位数字，如1000000040）
+20. SMALLTALK - 闲聊或询问如何使用
 
 请以JSON格式返回结果，格式如下：
 {
@@ -221,6 +286,7 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
         "invoice_vbeln": "发票号（如果提到）",
         "aufnr": "生产订单号（如果提到，通常是10位数字，如8900000103）",
         "internal_aufnr": "内部订单号（如果提到，通常是12位数字，如808000000008）",
+        "ebeln": "采购订单号（如果提到，通常是10位数字，如1000000040）",
         "sales_group": "销售组名称（如果提到，如'经销商销售组'、'直销组'等）",
         "sales_office": "销售办事处名称（如果提到，如'华东'、'华北'、'华南'、'西南'、'西北'、'华中'等）"
     },
@@ -233,20 +299,24 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 - 发票号通常是10位数字
 - 生产订单号通常是10位数字，如8900000103（注意区分：生产订单号是10位数字，销售订单号可能也是10位，但通常有VB前缀或上下文表明是销售订单）
 - **内部订单号通常是12位数字，如808000000008**（以808开头，用于内部成本核算）
+- **采购订单号通常是10位数字，如1000000040**（用于采购订单查询）
 - **销售组名称**：如果用户提到"销售组改为XXX"、"改为XXX销售组"等，提取XXX作为sales_group
 - **销售办事处名称**：如果用户提到"华东"、"华北"、"华南"、"西南"、"西北"、"华中"等，提取对应的销售办事处名称作为sales_office
 - 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等，应该是QUERY_ORDER_DETAIL
 - 如果用户提到"跳转到订单XXX"、"打开订单XXX"等，应该是NAVIGATE_ORDER_DETAIL
 - 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
 - **如果用户提到"内部订单"，应该识别为 QUERY_INTERNAL_ORDER，并将订单号提取为internal_aufnr**
+- **如果用户提到"生产订单"（没有提到齐套性检查），应该识别为 QUERY_PRODUCTION_ORDER，并将订单号提取为aufnr**
 - **重要区分**：
   * 如果提到"生产订单"的"物料可用性"、"齐套性检查"等，应该识别为 CHECK_PRODUCTION_ORDER_MATERIAL，并将订单号提取为aufnr
+  * 如果仅提到"生产订单"（没有提到齐套性检查），应该识别为 QUERY_PRODUCTION_ORDER，并将订单号提取为aufnr
   * 如果提到"内部订单"的"物料可用性"、"齐套性检查"等，应该识别为 CHECK_INTERNAL_ORDER_MATERIAL，并将订单号提取为internal_aufnr
   * 如果提到"销售订单"或仅提到"订单"的"ATP"、"可用性检查"等，应该识别为 ATP_CHECK，并将订单号提取为vbeln
-  * 如果同时提到"生产订单"和"物料可用性"，必须识别为 CHECK_PRODUCTION_ORDER_MATERIAL，而不是 ATP_CHECK
+  * 如果同时提到"生产订单"和"物料可用性"，必须识别为 CHECK_PRODUCTION_ORDER_MATERIAL，而不是 QUERY_PRODUCTION_ORDER
   * 如果同时提到"内部订单"和"物料可用性"或"齐套性检查"，必须识别为 CHECK_INTERNAL_ORDER_MATERIAL，而不是 QUERY_INTERNAL_ORDER
   * 如果仅提到"内部订单"（没有提到齐套性检查），应该识别为 QUERY_INTERNAL_ORDER，并将订单号提取为internal_aufnr
-- 优先提取订单号、交货单号、发票号、生产订单号、内部订单号、销售组名称，即使表达不完整也要识别
+  * **如果用户提到"采购订单"、"查看采购订单"等，应该识别为 QUERY_PURCHASE_ORDER，并将订单号提取为ebeln**
+- 优先提取订单号、交货单号、发票号、生产订单号、内部订单号、采购订单号、销售组名称，即使表达不完整也要识别
 - **置信度要求**：对于明确的意图（如包含订单号的查询），置信度应该>=0.8；对于模糊的意图，置信度可以>=0.6"""
 
         user_prompt = f"用户查询：{text}\n\n请识别意图并提取关键信息。"
@@ -351,7 +421,41 @@ def _identify_intent(text: str) -> str:
         if order_num:
             return "COPY_ORDER"
     
-    # 订单详情查询
+    # 生产订单详情查询（优先级高于销售订单，因为生产订单号是10位数字）
+    production_order_num = _extract_production_order_number(text)
+    if production_order_num:
+        if any(keyword in text_lower for keyword in ["生产订单"]):
+            if any(keyword in text_lower for keyword in ["详情", "信息", "查看", "显示"]):
+                return "QUERY_PRODUCTION_ORDER"
+            elif any(keyword in text_lower for keyword in ["物料可用性", "齐套性检查", "齐套性", "物料可用"]):
+                return "CHECK_PRODUCTION_ORDER_MATERIAL"
+            else:
+                # 如果提到生产订单号但没有明确意图，默认查询详情
+                return "QUERY_PRODUCTION_ORDER"
+    
+    # 内部订单详情查询（优先级高于销售订单，因为内部订单号是12位数字）
+    internal_order_num = _extract_internal_order_number(text)
+    if internal_order_num:
+        if any(keyword in text_lower for keyword in ["内部订单"]):
+            if any(keyword in text_lower for keyword in ["详情", "信息", "查看", "显示"]):
+                return "QUERY_INTERNAL_ORDER"
+            elif any(keyword in text_lower for keyword in ["物料可用性", "齐套性检查", "齐套性", "物料可用"]):
+                return "CHECK_INTERNAL_ORDER_MATERIAL"
+            else:
+                # 如果提到内部订单号但没有明确意图，默认查询详情
+                return "QUERY_INTERNAL_ORDER"
+    
+    # 采购订单详情查询（优先级高于销售订单，因为采购订单号是10位数字）
+    purchase_order_num = _extract_purchase_order_number(text)
+    if purchase_order_num or any(keyword in text_lower for keyword in ["采购订单", "查看采购订单"]):
+        if purchase_order_num or any(keyword in text_lower for keyword in ["采购订单"]):
+            if any(keyword in text_lower for keyword in ["详情", "信息", "查看", "显示"]):
+                return "QUERY_PURCHASE_ORDER"
+            else:
+                # 如果提到采购订单但没有明确意图，默认查询详情
+                return "QUERY_PURCHASE_ORDER"
+    
+    # 订单详情查询（销售订单）
     order_num = _extract_order_number(text)
     if order_num:
         if any(keyword in text_lower for keyword in ["详情", "信息", "查看", "显示"]):
@@ -423,6 +527,7 @@ async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
 5. 创建发票
 6. 复制订单
 7. 创建销售订单
+8. 查询采购订单详情（查看采购订单、采购订单详情等）
 
 当用户的问题不在你的能力范围内时，请友好地说明你能做什么，并给出一些示例。
 用简洁、专业、友好的中文回答。不要编造具体的数据或表格。"""
@@ -487,7 +592,8 @@ async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
 @router.post("/sd-agent/ai-query")
 async def sd_ai_query(
     payload: Dict[str, Any],
-    sd_service: SDService = Depends(get_sd_service)
+    sd_service: SDService = Depends(get_sd_service),
+    mm_service: MMService = Depends(get_mm_service)
 ) -> Dict[str, Any]:
     """
     SD模块AI查询接口
@@ -553,6 +659,10 @@ async def sd_ai_query(
                 extracted["aufnr"] = _extract_production_order_number(query)
             if not extracted.get("internal_aufnr"):
                 extracted["internal_aufnr"] = _extract_internal_order_number(query)
+            if not extracted.get("ebeln"):
+                extracted["ebeln"] = _extract_purchase_order_number(query)
+            if not extracted.get("ebeln"):
+                extracted["ebeln"] = _extract_purchase_order_number(query)
         
         # 根据意图处理
         if intent == "QUERY_ORDER_LIST":
@@ -691,6 +801,152 @@ async def sd_ai_query(
                         "text": f"查询内部订单 {internal_aufnr} 时出错：{str(e)}"
                     },
                     "message": f"查询内部订单 {internal_aufnr} 时出错：{str(e)}"
+                }
+        
+        elif intent == "QUERY_PRODUCTION_ORDER":
+            # 查询生产订单详情
+            # 优先使用LLM提取的生产订单号，否则使用规则提取
+            aufnr_from_llm = extracted.get("aufnr")
+            # 处理LLM返回空字符串的情况
+            if aufnr_from_llm and isinstance(aufnr_from_llm, str) and aufnr_from_llm.strip():
+                aufnr = aufnr_from_llm.strip()
+            else:
+                # LLM未提取到，尝试使用规则提取
+                aufnr = _extract_production_order_number(query)
+            
+            # 如果还是没有订单号，返回友好提示
+            if not aufnr or (isinstance(aufnr, str) and not aufnr.strip()):
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "data": {
+                        "type": "text",
+                        "text": "请提供生产订单号，例如：查看生产订单8900000103\n\n生产订单号通常是10位数字，如8900000103。"
+                    },
+                    "message": "请提供生产订单号，例如：查看生产订单8900000103"
+                }
+            
+            try:
+                result = await sd_service.get_production_order_detail(aufnr)
+                
+                # 检查订单是否存在
+                if result.get("code") != 200:
+                    error_msg = result.get("msg", "查询生产订单详情失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "text",
+                            "text": f"查询生产订单 {aufnr} 失败：{error_msg}"
+                        },
+                        "message": f"查询生产订单 {aufnr} 失败：{error_msg}"
+                    }
+                
+                order_data = result.get("data")
+                if not order_data:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "text",
+                            "text": f"未找到生产订单 {aufnr}"
+                        },
+                        "message": f"未找到生产订单 {aufnr}"
+                    }
+                
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "production_order_detail",
+                        "order": order_data,
+                        "aufnr": aufnr
+                    },
+                    "message": f"查询生产订单 {aufnr} 成功"
+                }
+            except Exception as e:
+                logger.error(f"查询生产订单详情失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "data": {
+                        "type": "text",
+                        "text": f"查询生产订单 {aufnr} 时出错：{str(e)}"
+                    },
+                    "message": f"查询生产订单 {aufnr} 时出错：{str(e)}"
+                }
+        
+        elif intent == "QUERY_PURCHASE_ORDER":
+            # 查询采购订单详情
+            # 优先使用LLM提取的采购订单号，否则使用规则提取
+            ebeln_from_llm = extracted.get("ebeln")
+            # 处理LLM返回空字符串的情况
+            if ebeln_from_llm and isinstance(ebeln_from_llm, str) and ebeln_from_llm.strip():
+                ebeln = ebeln_from_llm.strip()
+            else:
+                # LLM未提取到，尝试使用规则提取
+                ebeln = _extract_purchase_order_number(query)
+            
+            # 如果还是没有订单号，返回友好提示
+            if not ebeln or (isinstance(ebeln, str) and not ebeln.strip()):
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "data": {
+                        "type": "text",
+                        "text": "请提供采购订单号，例如：查看采购订单1000000040\n\n采购订单号通常是10位数字，如1000000040。"
+                    },
+                    "message": "请提供采购订单号，例如：查看采购订单1000000040"
+                }
+            
+            try:
+                result = await mm_service.get_purchase_order_detail(ebeln)
+                
+                # 检查订单是否存在
+                if result.get("code") != 200:
+                    error_msg = result.get("msg", "查询采购订单详情失败")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "text",
+                            "text": f"查询采购订单 {ebeln} 失败：{error_msg}"
+                        },
+                        "message": f"查询采购订单 {ebeln} 失败：{error_msg}"
+                    }
+                
+                order_data = result.get("data")
+                if not order_data:
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "text",
+                            "text": f"未找到采购订单 {ebeln}"
+                        },
+                        "message": f"未找到采购订单 {ebeln}"
+                    }
+                
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "purchase_order_detail",
+                        "order": order_data,
+                        "ebeln": ebeln
+                    },
+                    "message": f"查询采购订单 {ebeln} 成功"
+                }
+            except Exception as e:
+                logger.error(f"查询采购订单详情失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "data": {
+                        "type": "text",
+                        "text": f"查询采购订单 {ebeln} 时出错：{str(e)}"
+                    },
+                    "message": f"查询采购订单 {ebeln} 时出错：{str(e)}"
                 }
         
         elif intent == "ATP_CHECK" or intent == "CREATE_DELIVERY":

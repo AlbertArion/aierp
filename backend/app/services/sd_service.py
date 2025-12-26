@@ -464,20 +464,29 @@ class SDService:
                 mard_map_by_matnr_werks[summary_key] = {
                     "labst": 0.0,
                     "speme": 0.0,
+                    "bound_stock": 0.0,  # 绑定订单库存
+                    "free_stock": 0.0,  # 自由库存
                     "lgort_list": [],
                     "maktx": mard.get("maktx") or ""
                 }
             
-            # 累加库存
+            # 累加库存（区分绑定订单库存和自由库存）
             summary = mard_map_by_matnr_werks[summary_key]
-            summary["labst"] += float(mard.get("labst") or 0)
-            summary["speme"] += float(mard.get("speme") or 0)
+            sobkz = mard.get("sobkz") or ''
+            vbeln_mard = mard.get("vbeln") or ''
+            # 如果是绑定订单库存（sobkz='E'），累加einme
+            if sobkz == 'E' and vbeln_mard:
+                einme = float(mard.get("einme") or 0)
+                summary["bound_stock"] += einme
+            else:
+                # 如果是自由库存，累加labst和speme
+                summary["labst"] += float(mard.get("labst") or 0)
+                summary["speme"] += float(mard.get("speme") or 0)
             if lgort and lgort not in summary["lgort_list"]:
                 summary["lgort_list"].append(lgort)
         
-        # 查询预留库存（需要调用预留库存接口，这里先简化处理）
-        # 注意：预留库存查询需要调用lips接口，暂时先返回0
-        # 实际应该调用：/sinocst-master-data/lips/getReservedQty
+        # 获取当前销售订单号（用于排除当前订单的预留库存）
+        vbeln = order_data.get("vbeln", "")
         
         # 构建检查结果
         items = []
@@ -505,16 +514,48 @@ class SDService:
                 
                 if summary:
                     # 使用汇总数据
+                    # 区分绑定订单库存和自由库存
+                    bound_stock_qty = summary.get("bound_stock", 0.0)  # 绑定订单库存数量
                     labst = summary["labst"]
                     speme = summary["speme"]
                     # 修复：冻结库存不应该是负数，如果为负数，说明数据异常
                     if speme < 0:
-                        # 如果speme为负数，说明labst可能不准确，实际可用库存应该是|speme|
                         if labst == 0:
                             labst = abs(speme)
                             speme = 0
-                    available_qty = labst - speme
-                    reserved_qty = 0  # 预留库存（暂时设为0）
+                        else:
+                            speme = 0
+                    free_stock_qty = labst - speme  # 自由库存数量
+                    
+                    available_qty = bound_stock_qty + free_stock_qty
+                    
+                    # 预留库存：只从自由库存扣除，排除当前销售订单的预留
+                    # 注意：对于绑定销售订单的库存，不需要减去预留库存，因为绑定订单库存是专门为该订单预留的
+                    # 只有自由库存才需要减去其他交货单的预留库存
+                    reserved_qty = 0.0
+                    if free_stock_qty > 0:
+                        try:
+                            reserved_result = await self._request(
+                                method="GET",
+                                path="/sinocst-master-data/sinocst-lips/lips/getReservedQty",
+                                params={
+                                    "mandt": mandt,
+                                    "matnr": matnr,
+                                    "werks": werks,
+                                    "lgort": lgort or "",
+                                    "excludeVbeln": "",  # ATP检查时，交货单还未创建
+                                    "excludeVgbel": vbeln or ""  # 排除当前销售订单的预留
+                                }
+                            )
+                            reserved_qty = float(reserved_result.get("data", 0) or 0)
+                        except Exception as e:
+                            # 如果查询预留库存失败，设为0，不影响ATP检查
+                            reserved_qty = 0
+                        # 预留库存不能超过自由库存数量
+                        if reserved_qty > free_stock_qty:
+                            reserved_qty = free_stock_qty
+                    
+                    # 计算实际可用库存 = 绑定订单库存 + 自由库存 - 其他交货单的预留库存
                     actual_available_qty = available_qty - reserved_qty
                     is_available = actual_available_qty >= need_qty
                     
@@ -527,13 +568,13 @@ class SDService:
                         "werks": werks,
                         "lgort": lgort_display,
                         "need_qty": need_qty,
-                        "labst": labst,
-                        "speme": speme,
-                        "available_qty": available_qty,
-                        "reserved_qty": reserved_qty,
-                        "actual_available_qty": actual_available_qty,
+                        "labst": labst,  # 总库存（用于显示）
+                        "speme": speme,  # 冻结库存（用于显示）
+                        "available_qty": available_qty,  # 总可用库存（绑定订单库存 + 自由库存）
+                        "reserved_qty": reserved_qty,  # 预留库存
+                        "actual_available_qty": actual_available_qty,  # 实际可用库存
                         "is_available": is_available,
-                        "message": "库存充足" if is_available else f"库存不足：需要 {need_qty}，实际可用 {actual_available_qty}"
+                        "message": f"库存充足（总库存 {available_qty}，预留 {reserved_qty}，实际可用 {actual_available_qty}）" if is_available else f"库存不足：需要 {need_qty}，总库存 {available_qty}，预留 {reserved_qty}，实际可用 {actual_available_qty}"
                     })
                     
                     if not is_available:
@@ -561,22 +602,68 @@ class SDService:
                     continue
             
             # 精确匹配成功，使用精确数据
-            labst = float(mard.get("labst") or 0)  # 总库存（非限制库存）
-            speme = float(mard.get("speme") or 0)  # 冻结库存
-            # 修复：冻结库存不应该是负数，如果为负数，说明数据异常
-            if speme < 0:
-                # 如果speme为负数，说明labst可能不准确，实际可用库存应该是|speme|
-                if labst == 0:
-                    labst = abs(speme)
-                    speme = 0
-                else:
-                    # labst不为0，但speme为负数，将speme设为0
-                    speme = 0
-            available_qty = labst - speme  # 可用库存
-            reserved_qty = 0  # 预留库存（暂时设为0，实际应该查询）
-            actual_available_qty = available_qty - reserved_qty  # 实际可用库存
+            # 区分绑定订单库存和自由库存
+            sobkz = mard.get("sobkz") or ''
+            vbeln_mard = mard.get("vbeln") or ''
+            bound_stock_qty = 0.0  # 绑定订单库存数量
+            free_stock_qty = 0.0  # 自由库存数量
+            
+            # 如果是绑定订单库存（sobkz='E'），使用einme
+            if sobkz == 'E' and vbeln_mard:
+                einme = float(mard.get("einme") or 0)
+                bound_stock_qty = einme
+            else:
+                # 如果是自由库存，使用labst - speme
+                labst = float(mard.get("labst") or 0)
+                speme = float(mard.get("speme") or 0)
+                # 修复：冻结库存不应该是负数，如果为负数，说明数据异常
+                if speme < 0:
+                    if labst == 0:
+                        labst = abs(speme)
+                        speme = 0
+                    else:
+                        speme = 0
+                free_stock_qty = labst - speme
+            
+            available_qty = bound_stock_qty + free_stock_qty
+            
+            # 预留库存：只从自由库存扣除，排除当前销售订单的预留
+            # 注意：对于绑定销售订单的库存，不需要减去预留库存，因为绑定订单库存是专门为该订单预留的
+            # 只有自由库存才需要减去其他交货单的预留库存
+            reserved_qty = 0.0
+            if free_stock_qty > 0:
+                try:
+                    reserved_result = await self._request(
+                        method="GET",
+                        path="/sinocst-master-data/sinocst-lips/lips/getReservedQty",
+                        params={
+                            "mandt": mandt,
+                            "matnr": matnr,
+                            "werks": werks,
+                            "lgort": lgort or "",
+                            "excludeVbeln": "",  # ATP检查时，交货单还未创建
+                            "excludeVgbel": vbeln or ""  # 排除当前销售订单的预留
+                        }
+                    )
+                    reserved_qty = float(reserved_result.get("data", 0) or 0)
+                except Exception as e:
+                    # 如果查询预留库存失败，设为0，不影响ATP检查
+                    reserved_qty = 0
+                # 预留库存不能超过自由库存数量
+                if reserved_qty > free_stock_qty:
+                    reserved_qty = free_stock_qty
+            
+            # 计算实际可用库存 = 绑定订单库存 + 自由库存 - 其他交货单的预留库存
+            actual_available_qty = available_qty - reserved_qty
             
             is_available = actual_available_qty >= need_qty
+            
+            # 获取labst和speme用于显示（如果是绑定订单库存，labst可能为0）
+            labst_display = float(mard.get("labst") or 0) if sobkz != 'E' else 0
+            speme_display = float(mard.get("speme") or 0) if sobkz != 'E' else 0
+            if sobkz == 'E':
+                # 绑定订单库存，使用einme作为labst显示
+                labst_display = float(mard.get("einme") or 0)
             
             items.append({
                 "matnr": matnr,
@@ -584,13 +671,13 @@ class SDService:
                 "werks": werks,
                 "lgort": lgort or mard.get("lgort") or "",
                 "need_qty": need_qty,
-                "labst": labst,
-                "speme": speme,
-                "available_qty": available_qty,
-                "reserved_qty": reserved_qty,
-                "actual_available_qty": actual_available_qty,
+                "labst": labst_display,  # 总库存（用于显示）
+                "speme": speme_display,  # 冻结库存（用于显示）
+                "available_qty": available_qty,  # 总可用库存（绑定订单库存 + 自由库存）
+                "reserved_qty": reserved_qty,  # 预留库存
+                "actual_available_qty": actual_available_qty,  # 实际可用库存
                 "is_available": is_available,
-                "message": "库存充足" if is_available else f"库存不足：需要 {need_qty}，实际可用 {actual_available_qty}"
+                "message": f"库存充足（总库存 {available_qty}，预留 {reserved_qty}，实际可用 {actual_available_qty}）" if is_available else f"库存不足：需要 {need_qty}，总库存 {available_qty}，预留 {reserved_qty}，实际可用 {actual_available_qty}"
             })
             
             if not is_available:

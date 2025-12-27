@@ -11,6 +11,7 @@ import json
 import requests
 from app.services.sd_service import SDService
 from app.services.mm_service import MMService
+from app.services.agent_message_service import AgentMessageService
 
 logger = logging.getLogger(__name__)
 
@@ -589,11 +590,19 @@ async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
         "message": explanation  # 将LLM的回答也放在message字段，方便前端直接显示
     }
 
+# 依赖注入：创建AgentMessageService实例
+def get_message_service() -> AgentMessageService:
+    """创建AgentMessageService实例"""
+    return AgentMessageService()
+
 @router.post("/sd-agent/ai-query")
 async def sd_ai_query(
     payload: Dict[str, Any],
     sd_service: SDService = Depends(get_sd_service),
-    mm_service: MMService = Depends(get_mm_service)
+    mm_service: MMService = Depends(get_mm_service),
+    message_service: AgentMessageService = Depends(get_message_service),
+    x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
 ) -> Dict[str, Any]:
     """
     SD模块AI查询接口
@@ -623,6 +632,12 @@ async def sd_ai_query(
     """
     try:
         query = payload.get("query", "").strip()
+        
+        # 注意：不再在这里检查消息，消息会在用户打开对话时加载
+        # 消息通过conversation_id关联到对话，用户打开对话时会自动加载
+        # 如果query为空，可能是用户打开对话，此时应该加载对话关联的消息
+        # 但这里暂时不处理，由前端在打开对话时调用专门的API加载消息
+        
         if not query:
             raise HTTPException(status_code=400, detail="query不能为空")
         
@@ -1150,6 +1165,39 @@ async def sd_ai_query(
                         # ATP检查失败，返回详细结果
                         # 注意：success 应该返回 True，因为请求已成功处理并返回了检查结果
                         # 业务结果的"失败"通过 data.type: "atp_check_failed" 来表示
+                        
+                        # ATP检查不通过，发送消息到pp-agent
+                        context_id = None
+                        try:
+                            mandt = x_mandt or x_tenant_id or sd_service.mandt or "600"
+                            context_id = f"ATP_CHECK_{vbeln}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                            
+                            # 发送消息到pp-agent，通知需要转生产或内部订单
+                            # 自动生成新的对话ID，在pp-agent中会创建新对话
+                            msg_result = message_service.send_message(
+                                sender_agent="sd-agent",
+                                receiver_agent="pp-agent",
+                                message_type="ATP_CHECK_FAILED",
+                                content={
+                                    "action": "CREATE_PRODUCTION_OR_INTERNAL_ORDER",
+                                    "data": {
+                                        "vbeln": vbeln,
+                                        "orderType": "production_or_internal",  # 需要用户选择
+                                        "items": atp_result.get("items", []),
+                                        "message": atp_result.get("message", "ATP检查失败")
+                                    }
+                                },
+                                context_id=context_id,
+                                conversation_id=None,  # 自动生成新对话
+                                priority="HIGH",
+                                mandt=mandt,
+                                tenant_id=x_tenant_id
+                            )
+                            logger.info(f"ATP检查失败，已发送消息到pp-agent，订单号: {vbeln}, 对话ID: {msg_result.get('conversationId')}")
+                        except Exception as msg_error:
+                            logger.error(f"发送消息到pp-agent失败: {msg_error}", exc_info=True)
+                            # 消息发送失败不影响主流程，继续返回ATP检查结果
+                        
                         return {
                             "success": True,
                             "intent": intent,
@@ -1157,7 +1205,8 @@ async def sd_ai_query(
                                 "type": "atp_check_failed",
                                 "message": atp_result.get("message", "ATP检查失败"),
                                 "vbeln": vbeln,  # 销售订单号
-                                "items": atp_result.get("items", [])
+                                "items": atp_result.get("items", []),
+                                "contextId": context_id
                             }
                         }
                 except Exception as e:

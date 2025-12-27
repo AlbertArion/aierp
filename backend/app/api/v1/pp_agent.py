@@ -15,6 +15,8 @@ import httpx
 import requests  # 保留requests用于非流式请求
 import asyncio
 from app.services.pp_service import PPService
+from app.services.agent_message_service import AgentMessageService
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,11 @@ def get_pp_service(
         logger.warning("未收到有效的token请求头")
     
     return service
+
+# 依赖注入：创建AgentMessageService实例
+def get_message_service() -> AgentMessageService:
+    """创建AgentMessageService实例"""
+    return AgentMessageService()
 
 def _extract_order_number(text: str) -> Optional[str]:
     """从文本中提取生产订单号（改进版，更智能）"""
@@ -806,7 +813,10 @@ async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str
 @router.post("/pp-agent/ai-query")
 async def pp_ai_query(
     payload: Dict[str, Any],
-    pp_service: PPService = Depends(get_pp_service)
+    pp_service: PPService = Depends(get_pp_service),
+    message_service: AgentMessageService = Depends(get_message_service),
+    x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
 ) -> Dict[str, Any]:
     """
     PP模块AI查询接口
@@ -1548,6 +1558,60 @@ async def pp_ai_query(
                     "params": {"aufnr": aufnr} if aufnr else {}
                 },
                 "message": "正在为您跳转..."
+            }
+        
+        elif intent == "HANDLE_ATP_CHECK_FAILED" or intent == "CREATE_PRODUCTION_ORDER" or intent == "CREATE_INTERNAL_ORDER":
+            # 处理ATP检查失败的消息，创建生产订单或内部订单
+            # 这个意图通常来自消息处理，或者用户明确说要创建生产订单/内部订单
+            context = payload.get("context", {})
+            vbeln = context.get("vbeln") or extracted.get("vbeln")
+            order_type = context.get("orderType") or extracted.get("orderType", "production")
+            
+            if not vbeln:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": "缺少销售订单号，无法创建生产订单或内部订单"
+                }
+            
+            # 这里应该调用创建生产订单或内部订单的接口
+            # 暂时返回提示信息，实际创建逻辑需要调用后端服务
+            return {
+                "success": True,
+                "intent": intent,
+                "data": {
+                    "type": "order_creation_prompt",
+                    "message": f"准备为销售订单 {vbeln} 创建{'生产订单' if order_type == 'production' else '内部订单'}，请确认订单信息",
+                    "vbeln": vbeln,
+                    "orderType": order_type
+                }
+            }
+        
+        elif intent == "CHECK_MATERIAL_AVAILABILITY" or intent == "CHECK_BOM":
+            # 齐套性检查（BOM检查）
+            aufnr = extracted.get("aufnr") or context.get("aufnr") if 'context' in locals() else None
+            internal_aufnr = extracted.get("internal_aufnr") or context.get("internal_aufnr") if 'context' in locals() else None
+            
+            if not aufnr and not internal_aufnr:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": "请提供生产订单号或内部订单号"
+                }
+            
+            # 这里应该调用齐套性检查接口
+            # 检查通过：发送消息到sd-agent
+            # 检查不通过：发送消息到mm-agent
+            # 暂时返回提示信息
+            return {
+                "success": True,
+                "intent": intent,
+                "data": {
+                    "type": "material_check_prompt",
+                    "message": f"准备进行齐套性检查，订单号: {aufnr or internal_aufnr}",
+                    "aufnr": aufnr,
+                    "internal_aufnr": internal_aufnr
+                }
             }
         
         else:

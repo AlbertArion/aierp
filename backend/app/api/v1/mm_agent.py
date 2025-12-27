@@ -12,6 +12,8 @@ import os
 import json
 import requests
 from app.services.mm_service import MMService
+from app.services.agent_message_service import AgentMessageService
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,11 @@ def get_mm_service(
         service.set_tenant_id(x_tenant_id.strip())
     
     return service
+
+# 依赖注入：创建AgentMessageService实例
+def get_message_service() -> AgentMessageService:
+    """创建AgentMessageService实例"""
+    return AgentMessageService()
 
 def _extract_purchase_order_number(text: str) -> Optional[str]:
     """从文本中提取采购订单号"""
@@ -347,7 +354,10 @@ async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
 @router.post("/mm-agent/ai-query")
 async def mm_ai_query(
     payload: Dict[str, Any],
-    mm_service: MMService = Depends(get_mm_service)
+    mm_service: MMService = Depends(get_mm_service),
+    message_service: AgentMessageService = Depends(get_message_service),
+    x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
 ) -> Dict[str, Any]:
     """
     MM模块AI查询接口
@@ -376,6 +386,10 @@ async def mm_ai_query(
     """
     try:
         query = payload.get("query", "").strip()
+        
+        # 注意：不再在这里检查消息，消息会在用户打开对话时加载
+        # 消息通过conversation_id关联到对话，用户打开对话时会自动加载
+        
         if not query:
             raise HTTPException(status_code=400, detail="query不能为空")
         

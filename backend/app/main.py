@@ -182,6 +182,19 @@ def create_app() -> FastAPI:
     from .api.routes import register_routes
     register_routes(app)
 
+    # 插件系统初始化
+    plugin_manager = None
+    try:
+        from .plugin.manager import PluginManager
+        import os
+        plugin_directory = os.getenv("PLUGIN_DIRECTORY", os.path.join(os.path.expanduser("~"), "plugins"))
+        auto_load = os.getenv("PLUGIN_AUTO_LOAD", "true").lower() == "true"
+        plugin_manager = PluginManager(app, plugin_directory=plugin_directory, auto_load=auto_load)
+        app.state.plugin_manager = plugin_manager
+        logging.info("Plugin system initialized successfully")
+    except Exception as e:
+        logging.warning(f"Failed to initialize plugin system: {e}")
+
     @app.get("/health")
     def health_check():
         return {"status": "ok"}
@@ -195,6 +208,15 @@ def create_app() -> FastAPI:
         # 检查是否已有数据
         if len(memory_db["work_reports"]) == 0:
             await init_test_data(memory_db)
+
+    # 关闭时清理插件系统
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        if hasattr(app.state, "plugin_manager") and app.state.plugin_manager:
+            try:
+                app.state.plugin_manager.shutdown()
+            except Exception as e:
+                logging.error(f"Failed to shutdown plugin system: {e}")
 
     return app
 

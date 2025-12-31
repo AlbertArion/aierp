@@ -9,6 +9,7 @@ import logging
 import os
 import json
 import requests
+from datetime import datetime
 from app.services.sd_service import SDService
 from app.services.mm_service import MMService
 from app.services.agent_message_service import AgentMessageService
@@ -1539,6 +1540,22 @@ async def sd_ai_query(
                             }
                             all_materials_items.append(material_item)
                         
+                        # 对all_materials_items进行去重（根据物料号、工厂、库存地点去重）
+                        # 使用字典去重，key为：物料号-工厂-库存地点
+                        materials_map = {}
+                        for item in all_materials_items:
+                            key = f"{item.get('matnr', '')}-{item.get('werks', '')}-{item.get('lgort', '')}"
+                            if key not in materials_map:
+                                materials_map[key] = item
+                            else:
+                                # 如果已存在，合并需求数量（取较大值）
+                                existing = materials_map[key]
+                                existing_need_qty = float(existing.get('need_qty', 0) or 0)
+                                current_need_qty = float(item.get('need_qty', 0) or 0)
+                                if current_need_qty > existing_need_qty:
+                                    materials_map[key] = item
+                        all_materials_items = list(materials_map.values())
+                        
                         # 检查是否所有物料都充足
                         all_available = all(item.get("is_available", False) for item in all_materials_items)
                         
@@ -1749,7 +1766,22 @@ async def sd_ai_query(
                             }
                             not_enough_materials.append(material_item)
                         
-                        material_names = [item.get("maktx", item.get("matnr", "")) for item in not_enough_list]
+                        # 对not_enough_materials进行去重（根据物料号、工厂、库存地点去重）
+                        not_enough_map = {}
+                        for item in not_enough_materials:
+                            key = f"{item.get('matnr', '')}-{item.get('werks', '')}-{item.get('lgort', '')}"
+                            if key not in not_enough_map:
+                                not_enough_map[key] = item
+                            else:
+                                # 如果已存在，合并需求数量（取较大值）
+                                existing = not_enough_map[key]
+                                existing_need_qty = float(existing.get('need_qty', 0) or 0)
+                                current_need_qty = float(item.get('need_qty', 0) or 0)
+                                if current_need_qty > existing_need_qty:
+                                    not_enough_map[key] = item
+                        not_enough_materials = list(not_enough_map.values())
+                        
+                        material_names = [item.get("maktx", item.get("matnr", "")) for item in not_enough_materials]
                         material_names_str = "、".join(material_names[:5])  # 最多显示5个物料
                         if len(not_enough_list) > 5:
                             material_names_str += f"等{len(not_enough_list)}个物料"
@@ -2254,14 +2286,20 @@ async def sd_ai_query(
                 # 如果指定了销售组关键词，查找并设置销售组
                 if "_sales_group_keyword" in new_order_data:
                     keyword = new_order_data.pop("_sales_group_keyword")
+                    logger.info(f"开始查找销售组，关键词: '{keyword}'")
                     sales_group = await sd_service.get_sales_group_by_name(keyword)
                     
                     if sales_group:
                         new_order_data["vkgrp"] = sales_group.get("vkgrp")
                         new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
                         logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
+                        # 清除原订单的销售组信息，确保使用新的销售组
+                        if "vkgrpName" in new_order_data and not new_order_data.get("vkgrpName"):
+                            new_order_data["vkgrpName"] = sales_group.get("bezei") or ""
                     else:
-                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组")
+                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: {new_order_data.get('vkgrp', 'N/A')}")
+                else:
+                    logger.info("未检测到销售组修改请求，保持原订单的销售组")
                 
                 # 创建新订单
                 create_result = await sd_service.create_sales_order(new_order_data)
@@ -2525,14 +2563,20 @@ async def sd_ai_query(
                 # 如果指定了销售组关键词，查找并设置销售组
                 if "_sales_group_keyword" in new_order_data:
                     keyword = new_order_data.pop("_sales_group_keyword")
+                    logger.info(f"开始查找销售组，关键词: '{keyword}'")
                     sales_group = await sd_service.get_sales_group_by_name(keyword)
                     
                     if sales_group:
                         new_order_data["vkgrp"] = sales_group.get("vkgrp")
                         new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
                         logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
+                        # 清除原订单的销售组信息，确保使用新的销售组
+                        if "vkgrpName" in new_order_data and not new_order_data.get("vkgrpName"):
+                            new_order_data["vkgrpName"] = sales_group.get("bezei") or ""
                     else:
-                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组")
+                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: {new_order_data.get('vkgrp', 'N/A')}")
+                else:
+                    logger.info("未检测到销售组修改请求，保持原订单的销售组")
                 
                 # 创建新订单
                 create_result = await sd_service.create_sales_order(new_order_data)
@@ -2941,9 +2985,9 @@ def _copy_order_data(order_data: Dict[str, Any], query: str, extracted: Optional
             # 支持带空格的词组，如："销售组改为经销商销售组"
             patterns = [
                 r"销售组改为\s*[""']([^""']+)[""']",  # 匹配引号中的完整内容（优先匹配）
+                r"销售组改为[：:\s]*([^，,。.\n并]+?)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文，冒号可选，使用非贪婪匹配）
                 r"改为\s*[""']([^""']+)[""']",  # 匹配引号中的完整内容（优先匹配）
-                r"销售组改为[：:\s]*([^，,。.\n并]+)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文，冒号可选）
-                r"改为[：:\s]+([^，,。.\n并]+)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文）
+                r"改为[：:\s]+([^，,。.\n并]+?)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文，使用非贪婪匹配）
             ]
             for pattern in patterns:
                 match = re.search(pattern, query)
@@ -2951,6 +2995,10 @@ def _copy_order_data(order_data: Dict[str, Any], query: str, extracted: Optional
                     sales_group_keyword = match.group(1).strip()
                     # 移除可能的引号
                     sales_group_keyword = sales_group_keyword.strip('"').strip("'").strip()
+                    # 如果提取到的内容包含"销售组"关键词，需要进一步处理
+                    if "销售组" in sales_group_keyword:
+                        # 移除"销售组"关键词，只保留名称部分
+                        sales_group_keyword = sales_group_keyword.replace("销售组", "").strip()
                     if sales_group_keyword:
                         logger.info(f"使用正则表达式 '{pattern}' 提取到销售组关键词: {sales_group_keyword}")
                         break

@@ -2,7 +2,7 @@
 Agent消息API接口
 用于agent之间的消息传递
 """
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
 import logging
@@ -159,12 +159,12 @@ async def receive_messages_get(
 
 @router.post("/agent-message/mark-read")
 async def mark_message_read(
-    message_id: str,
+    messageId: str = Query(..., alias="messageId"),
     message_service: AgentMessageService = Depends(get_message_service)
 ) -> Dict[str, Any]:
     """标记消息为已读"""
     try:
-        message_service.mark_message_read(message_id)
+        message_service.mark_message_read(messageId)
         return {
             "code": 200,
             "msg": "消息已标记为已读"
@@ -175,12 +175,12 @@ async def mark_message_read(
 
 @router.post("/agent-message/mark-processed")
 async def mark_message_processed(
-    message_id: str,
+    messageId: str = Query(..., alias="messageId"),
     message_service: AgentMessageService = Depends(get_message_service)
 ) -> Dict[str, Any]:
     """标记消息为已处理"""
     try:
-        message_service.mark_message_processed(message_id)
+        message_service.mark_message_processed(messageId)
         return {
             "code": 200,
             "msg": "消息已标记为已处理"

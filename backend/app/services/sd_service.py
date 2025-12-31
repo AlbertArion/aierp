@@ -801,6 +801,9 @@ class SDService:
         Returns:
             销售组信息，如果不存在则返回None
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # 获取销售组列表
         result = await self._request(
             method="GET",
@@ -811,13 +814,39 @@ class SDService:
         data = result.get("data", {})
         records = data.get("records", []) or data.get("data", [])
         
-        # 查找名称包含关键词的销售组
+        if not records:
+            logger.warning(f"未获取到销售组列表")
+            return None
+        
+        # 规范化关键词（去除空格，转为小写用于匹配）
+        keyword_normalized = name_keyword.strip().lower()
+        
+        # 优先匹配：完全匹配（忽略大小写和空格）
         for group in records:
-            bezei = group.get("bezei", "") or ""
-            vkgrp = group.get("vkgrp", "") or ""
-            # 匹配名称或代码
-            if name_keyword in bezei or name_keyword in vkgrp:
+            bezei = (group.get("bezei", "") or "").strip()
+            vkgrp = (group.get("vkgrp", "") or "").strip()
+            
+            # 完全匹配（忽略大小写）
+            if bezei.lower() == keyword_normalized or vkgrp.lower() == keyword_normalized:
+                logger.info(f"找到完全匹配的销售组: {vkgrp} - {bezei}")
                 return group
+        
+        # 次优匹配：包含匹配（忽略大小写）
+        for group in records:
+            bezei = (group.get("bezei", "") or "").strip()
+            vkgrp = (group.get("vkgrp", "") or "").strip()
+            
+            # 包含匹配（忽略大小写）
+            if keyword_normalized in bezei.lower() or keyword_normalized in vkgrp.lower():
+                logger.info(f"找到包含匹配的销售组: {vkgrp} - {bezei}")
+                return group
+        
+        # 如果都没匹配到，记录所有销售组信息用于调试
+        logger.warning(f"未找到包含'{name_keyword}'的销售组。可用销售组列表:")
+        for group in records[:10]:  # 只记录前10个，避免日志过长
+            bezei = (group.get("bezei", "") or "").strip()
+            vkgrp = (group.get("vkgrp", "") or "").strip()
+            logger.warning(f"  - {vkgrp}: {bezei}")
         
         return None
     

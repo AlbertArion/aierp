@@ -18,8 +18,22 @@ class PPService:
         self.timeout = PPConfig.TIMEOUT
         self.retry_count = PPConfig.RETRY_COUNT
         self.token = None  # 用户token，从请求中获取
+        self.mandt = None  # 集团代码，从请求中获取
+        self.tenant_id = None  # 租户ID，从请求中获取
         # 判断是否通过网关访问
         self.is_gateway = "9015" in self.base_url or "gateway" in self.base_url.lower()
+    
+    def set_token(self, token: str):
+        """设置认证token"""
+        self.token = token
+    
+    def set_mandt(self, mandt: str):
+        """设置集团代码"""
+        self.mandt = mandt
+    
+    def set_tenant_id(self, tenant_id: str):
+        """设置租户ID"""
+        self.tenant_id = tenant_id
     
     def _build_path(self, path: str) -> str:
         """
@@ -36,10 +50,6 @@ class PPService:
             elif path.startswith("/sinocst-module-pp"):
                 return path.replace("/sinocst-module-pp", "", 1)
             return path
-    
-    def set_token(self, token: str):
-        """设置认证token"""
-        self.token = token
     
     def _normalize_aufnr(self, aufnr: str) -> str:
         """
@@ -115,6 +125,20 @@ class PPService:
             logger.info("使用配置的API_TOKEN")
         else:
             logger.warning("未设置token，PP服务请求可能失败")
+        
+        # 添加租户信息请求头（X-Mandt和X-Tenant-Id）
+        # 这些请求头对于跨服务调用非常重要，确保下游服务能够正确获取租户信息
+        if self.mandt:
+            request_headers["X-Mandt"] = self.mandt
+            logger.info(f"已添加X-Mandt头到请求: {self.mandt}")
+        
+        if self.tenant_id:
+            request_headers["X-Tenant-Id"] = self.tenant_id
+            logger.info(f"已添加X-Tenant-Id头到请求: {self.tenant_id}")
+        elif self.mandt:
+            # 如果没有tenantId但有mandt，使用mandt作为tenantId（通常它们是同一个值）
+            request_headers["X-Tenant-Id"] = self.mandt
+            logger.info(f"已添加X-Tenant-Id头到请求（使用mandt值）: {self.mandt}")
         
         # 重试逻辑
         last_error = None
@@ -315,3 +339,25 @@ class PPService:
         # 规范化订单号格式
         normalized_aufnr = self._normalize_aufnr(aufnr)
         return await self._request("GET", "/sinocst-module-pp/productOrder/status", params={"aufnr": normalized_aufnr})
+    
+    async def create_production_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        创建生产订单
+        
+        Args:
+            order_data: 生产订单数据，包含以下字段：
+                - matnr: 物料号（必填）
+                - werks: 工厂（必填）
+                - gamng: 订单数量（必填）
+                - gmein: 基本计量单位（可选，默认PC）
+                - auart: 订单类型（可选，默认PP01）
+                - kdauf: 销售订单号（可选）
+                - kdpos: 销售订单行项目号（可选）
+                - gstrp: 基本开始日期（可选）
+                - gltrp: 基本完成日期（可选）
+                - internal: 是否内部生产订单（可选，默认False）
+        
+        Returns:
+            创建结果，包含订单号（aufnr）
+        """
+        return await self._request("POST", "/sinocst-module-pp/productOrder/add", json=order_data)

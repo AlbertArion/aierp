@@ -952,12 +952,19 @@ class SDService:
         # 获取BOM组件列表（resbList）
         resb_list = order_data.get("resbList", [])
         if not resb_list:
-            logger.warning(f"生产订单 {aufnr} 没有BOM组件数据（resbList为空）")
+            # 获取订单信息用于错误提示
+            matnr = order_data.get("matnr", "未知")
+            werks = order_data.get("werks", "未知")
+            stlan = order_data.get("stlan", "未配置")
+            stlal = order_data.get("stlal", "未配置")
+            rsnum = order_data.get("rsnum", "未知")
+            
+            logger.warning(f"生产订单 {aufnr} 没有BOM组件数据（resbList为空）。订单信息：物料={matnr}, 工厂={werks}, BOM用途={stlan}, BOM备选={stlal}, 预留号={rsnum}")
             return {
                 "code": 400,  # 改为400，表示请求错误（无法检查）
                 "success": False,
                 "data": [],
-                "message": "生产订单没有BOM组件数据，无法进行物料可用性检查",
+                "message": f"生产订单 {aufnr} 没有BOM组件数据，无法进行物料可用性检查。物料：{matnr}，工厂：{werks}。请检查物料在工厂下是否配置了BOM（用途：{stlan}，备选：{stlal}）。",
                 "error_type": "NO_BOM_DATA"  # 添加错误类型标识
             }
         

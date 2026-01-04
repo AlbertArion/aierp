@@ -125,19 +125,20 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
         system_prompt = """你是一个物料管理(MM)系统的智能助手。请分析用户的查询意图，并提取关键信息。
 
 支持的意图类型：
-1. QUERY_ORDER_LIST - 查询采购订单列表（查询所有订单、订单列表、显示订单等）
-2. QUERY_ORDER_DETAIL - 查询采购订单详情（用户提到订单号、查看订单、订单详情等）
-3. QUERY_REQUISITION_LIST - 查询采购申请列表（查询所有申请、申请列表等）
-4. QUERY_REQUISITION_DETAIL - 查询采购申请详情（用户提到申请号、查看申请、申请详情等）
-5. QUERY_INFO_RECORD_LIST - 查询采购信息记录列表
-6. QUERY_INFO_RECORD_DETAIL - 查询采购信息记录详情
-7. QUERY_MATERIAL_DOCUMENT_LIST - 查询物料凭证列表
-8. QUERY_MATERIAL_DOCUMENT_DETAIL - 查询物料凭证详情
-9. NAVIGATE_ORDER_DETAIL - 跳转到采购订单详情页面
-10. NAVIGATE_ORDER_LIST - 跳转到采购订单列表页面
-11. NAVIGATE_REQUISITION_DETAIL - 跳转到采购申请详情页面
-12. NAVIGATE_REQUISITION_LIST - 跳转到采购申请列表页面
-13. SMALLTALK - 闲聊或询问如何使用
+1. CREATE_PURCHASE_ORDER - 创建采购订单（为生产订单XXX的缺料物料创建采购订单、创建采购订单、为XXX创建采购订单等，注意：这是创建操作，不是查询）
+2. QUERY_ORDER_LIST - 查询采购订单列表（查询所有订单、订单列表、显示订单等）
+3. QUERY_ORDER_DETAIL - 查询采购订单详情（用户提到订单号、查看订单、订单详情等）
+4. QUERY_REQUISITION_LIST - 查询采购申请列表（查询所有申请、申请列表等）
+5. QUERY_REQUISITION_DETAIL - 查询采购申请详情（用户提到申请号、查看申请、申请详情等）
+6. QUERY_INFO_RECORD_LIST - 查询采购信息记录列表
+7. QUERY_INFO_RECORD_DETAIL - 查询采购信息记录详情
+8. QUERY_MATERIAL_DOCUMENT_LIST - 查询物料凭证列表
+9. QUERY_MATERIAL_DOCUMENT_DETAIL - 查询物料凭证详情
+10. NAVIGATE_ORDER_DETAIL - 跳转到采购订单详情页面
+11. NAVIGATE_ORDER_LIST - 跳转到采购订单列表页面
+12. NAVIGATE_REQUISITION_DETAIL - 跳转到采购申请详情页面
+13. NAVIGATE_REQUISITION_LIST - 跳转到采购申请列表页面
+14. SMALLTALK - 闲聊或询问如何使用
 
 请以JSON格式返回结果，格式如下：
 {
@@ -155,8 +156,10 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 注意：
 - 采购订单号通常是10位数字
 - 采购申请号通常是10位数字
+- **如果用户提到"为生产订单XXX的缺料物料创建采购订单"、"创建采购订单"、"为XXX创建采购订单"、"为缺料物料创建采购订单"等，应该是CREATE_PURCHASE_ORDER，而不是QUERY_ORDER_LIST**
+- **创建采购订单的意图优先级高于查询订单列表，如果同时提到"创建"和"采购订单"，应该识别为CREATE_PURCHASE_ORDER**
 - 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等，应该是QUERY_ORDER_DETAIL
-- 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
+- 如果只提到"订单列表"、"所有订单"等（没有提到"创建"），应该是QUERY_ORDER_LIST
 - 优先提取订单号、申请号，即使表达不完整也要识别"""
 
         user_prompt = f"用户查询：{text}\n\n请识别意图并提取关键信息。"
@@ -226,6 +229,11 @@ def _identify_intent(text: str) -> str:
     识别用户意图（规则式匹配，作为备选方案）
     """
     text_lower = text.lower()
+    
+    # 创建采购订单意图（优先级最高，因为"创建"比"查询"更重要）
+    if any(keyword in text_lower for keyword in ["创建采购订单", "创建订单", "为", "缺料物料"]):
+        if any(keyword in text_lower for keyword in ["采购订单", "订单"]) or "缺料物料" in text_lower:
+            return "CREATE_PURCHASE_ORDER"
     
     # 页面跳转意图
     if any(keyword in text_lower for keyword in ["跳转", "打开", "进入", "去", "导航"]):
@@ -422,7 +430,96 @@ async def mm_ai_query(
                 extracted["banfn"] = _extract_purchase_requisition_number(query)
         
         # 根据意图处理
-        if intent == "QUERY_ORDER_LIST":
+        if intent == "CREATE_PURCHASE_ORDER":
+            # 创建采购订单
+            context = payload.get("context", {})
+            items = context.get("items", [])
+            aufnr = context.get("aufnr", "")
+            source_agent = context.get("source_agent", "pp-agent")
+            conversation_id = payload.get("conversation_id")
+            
+            if not items or len(items) == 0:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": "缺少物料信息，无法创建采购订单"
+                }
+            
+            # 构建物料列表描述
+            material_list = []
+            for item in items:
+                matnr = item.get("matnr", "")
+                matnr_name = item.get("matnr_name") or item.get("maktx", "")
+                need_qty = item.get("need_qty", 0)
+                available_qty = item.get("actual_available_qty", 0)
+                purchase_qty = max(0, need_qty - available_qty)
+                meins = item.get("meins", "PC")
+                
+                if matnr_name:
+                    material_list.append(f"物料{matnr_name}({matnr})需要采购{purchase_qty} {meins}")
+                else:
+                    material_list.append(f"物料{matnr}需要采购{purchase_qty} {meins}")
+            
+            material_desc = "，".join(material_list)
+            
+            # 返回消息，提示用户需要在前端创建采购订单
+            message = f"已收到创建采购订单请求。"
+            if aufnr:
+                message += f"生产订单号：{aufnr}。"
+            message += f"需要采购的物料：{material_desc}。"
+            message += "请前往MM Agent前端页面创建采购订单，或使用'创建采购订单'功能。"
+            
+            # 将消息保存到 agent-message 系统，以便前端能够加载显示
+            try:
+                # 从context中获取sender_user_id（如果pp-agent传递了）
+                # 如果没有，设置为None，这样所有用户都能看到这个消息
+                receiver_user_id = context.get("sender_user_id")
+                
+                # 注意：由于pp-agent直接调用API，可能没有传递用户ID
+                # 设置为None，让所有用户都能看到这个消息
+                # 前端在加载消息时，会通过receiver_user_id匹配或NULL匹配来获取消息
+                
+                message_result = message_service.send_message(
+                    sender_agent=source_agent,
+                    receiver_agent="mm-agent",
+                    message_type="CREATE_PURCHASE_ORDER_REQUEST",
+                    content={
+                        "action": "CREATE_PURCHASE_ORDER",
+                        "data": {
+                            "type": "create_purchase_order_request",
+                            "items": items,
+                            "aufnr": aufnr,
+                            "source_agent": source_agent,
+                            "material_desc": material_desc,
+                            "message": message
+                        }
+                    },
+                    sender_user_id=receiver_user_id,
+                    receiver_user_id=receiver_user_id,  # 如果为None，所有用户都能看到（通过receive_messages的OR条件）
+                    conversation_id=conversation_id,
+                    priority="HIGH",
+                    mandt=x_mandt,
+                    tenant_id=x_tenant_id
+                )
+                logger.info(f"已保存创建采购订单消息到agent-message系统: messageId={message_result.get('messageId')}, conversationId={message_result.get('conversationId')}, receiver_user_id={receiver_user_id}")
+            except Exception as e:
+                logger.error(f"保存消息到agent-message系统失败: {e}", exc_info=True)
+                # 即使保存失败，也返回响应
+            
+            return {
+                "success": True,
+                "intent": intent,
+                "message": message,
+                "data": {
+                    "type": "create_purchase_order_request",
+                    "items": items,
+                    "aufnr": aufnr,
+                    "source_agent": source_agent,
+                    "material_desc": material_desc
+                }
+            }
+        
+        elif intent == "QUERY_ORDER_LIST":
             # 查询采购订单列表
             current = payload.get("current", 1)
             size = payload.get("size", 10)

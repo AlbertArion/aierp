@@ -273,6 +273,7 @@ class AgentMessageService:
                 FROM agent_messages
                 WHERE receiver_agent = ?
                 AND status = 'PENDING'
+                AND read_time IS NULL
                 AND is_deleted = 0
                 AND conversation_id IS NOT NULL
             """

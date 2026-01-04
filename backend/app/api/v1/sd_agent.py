@@ -302,8 +302,8 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 - 生产订单号通常是10位数字，如8900000103（注意区分：生产订单号是10位数字，销售订单号可能也是10位，但通常有VB前缀或上下文表明是销售订单）
 - **内部订单号通常是12位数字，如808000000008**（以808开头，用于内部成本核算）
 - **采购订单号通常是10位数字，如1000000040**（用于采购订单查询）
-- **销售组名称**：如果用户提到"销售组改为XXX"、"改为XXX销售组"等，提取XXX作为sales_group
-- **销售办事处名称**：如果用户提到"华东"、"华北"、"华南"、"西南"、"西北"、"华中"等，提取对应的销售办事处名称作为sales_office
+- **销售组名称**：如果用户提到"销售组改为XXX"、"改为XXX销售组"、"销售组改成XXX"、"改成XXX销售组"、"销售组修改为XXX"、"修改销售组为XXX"、"将销售组改为XXX"、"把销售组改为XXX"等任何表达修改销售组的意图，都要提取XXX作为sales_group。注意：XXX可能是完整的销售组名称（如"经销商销售组"、"大客户销售组"、"直销组"等），也可能是不完整的名称（如"经销商"、"大客户"等），都要完整提取。
+- **销售办事处名称**：如果用户提到"华东"、"华北"、"华南"、"西南"、"西北"、"华中"等，提取对应的销售办事处名称作为sales_office。如果用户提到"销售办事处改为XXX"、"改为XXX办事处"等，也要提取XXX作为sales_office
 - 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等，应该是QUERY_ORDER_DETAIL
 - 如果用户提到"跳转到订单XXX"、"打开订单XXX"等，应该是NAVIGATE_ORDER_DETAIL
 - 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
@@ -2260,6 +2260,21 @@ async def sd_ai_query(
                 for idx, item in enumerate(ap_list):
                     logger.info(f"  行项目 {idx + 1}: posnr={item.get('posnr')}, matnr={item.get('matnr')}, maktx={item.get('maktx')}, zmeng={item.get('zmeng')}, kwmeng={item.get('kwmeng')}")
                 
+                # 如果LLM没有提取到销售组或销售办事处信息，使用专门的LLM函数进行语义理解
+                if not extracted or (not extracted.get("sales_group") and not extracted.get("sales_office")):
+                    logger.info("LLM未提取到销售组或销售办事处信息，使用专门的LLM函数进行语义理解")
+                    llm_modifications = await _extract_sales_modifications_with_llm(query)
+                    if llm_modifications.get("sales_group") and not extracted.get("sales_group"):
+                        if not extracted:
+                            extracted = {}
+                        extracted["sales_group"] = llm_modifications.get("sales_group")
+                        logger.info(f"通过专门的LLM函数提取到销售组: {extracted['sales_group']}")
+                    if llm_modifications.get("sales_office") and not extracted.get("sales_office"):
+                        if not extracted:
+                            extracted = {}
+                        extracted["sales_office"] = llm_modifications.get("sales_office")
+                        logger.info(f"通过专门的LLM函数提取到销售办事处: {extracted['sales_office']}")
+                
                 # 复制订单数据
                 logger.info(f"开始复制订单数据，源订单行项目数量: {len(ap_list)}")
                 new_order_data = _copy_order_data(source_order, query, extracted)
@@ -2287,15 +2302,18 @@ async def sd_ai_query(
                 if "_sales_group_keyword" in new_order_data:
                     keyword = new_order_data.pop("_sales_group_keyword")
                     logger.info(f"开始查找销售组，关键词: '{keyword}'")
+                    # 先清除原订单的销售组信息，确保使用新的销售组
+                    old_vkgrp = new_order_data.get("vkgrp")
+                    old_vkgrpName = new_order_data.get("vkgrpName")
+                    logger.info(f"原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
+                    
                     sales_group = await sd_service.get_sales_group_by_name(keyword)
                     
                     if sales_group:
+                        # 强制设置新的销售组，覆盖原订单的销售组信息
                         new_order_data["vkgrp"] = sales_group.get("vkgrp")
                         new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
                         logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
-                        # 清除原订单的销售组信息，确保使用新的销售组
-                        if "vkgrpName" in new_order_data and not new_order_data.get("vkgrpName"):
-                            new_order_data["vkgrpName"] = sales_group.get("bezei") or ""
                     else:
                         logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: {new_order_data.get('vkgrp', 'N/A')}")
                 else:
@@ -2423,6 +2441,21 @@ async def sd_ai_query(
                     for idx, item in enumerate(ap_list):
                         logger.info(f"  行项目 {idx + 1}: posnr={item.get('posnr')}, matnr={item.get('matnr')}, maktx={item.get('maktx')}, zmeng={item.get('zmeng')}, kwmeng={item.get('kwmeng')}")
                     
+                    # 如果LLM没有提取到销售组或销售办事处信息，使用专门的LLM函数进行语义理解
+                    if not extracted or (not extracted.get("sales_group") and not extracted.get("sales_office")):
+                        logger.info("LLM未提取到销售组或销售办事处信息，使用专门的LLM函数进行语义理解")
+                        llm_modifications = await _extract_sales_modifications_with_llm(query)
+                        if llm_modifications.get("sales_group") and not extracted.get("sales_group"):
+                            if not extracted:
+                                extracted = {}
+                            extracted["sales_group"] = llm_modifications.get("sales_group")
+                            logger.info(f"通过专门的LLM函数提取到销售组: {extracted['sales_group']}")
+                        if llm_modifications.get("sales_office") and not extracted.get("sales_office"):
+                            if not extracted:
+                                extracted = {}
+                            extracted["sales_office"] = llm_modifications.get("sales_office")
+                            logger.info(f"通过专门的LLM函数提取到销售办事处: {extracted['sales_office']}")
+                    
                     # 复制订单数据
                     logger.info(f"开始复制订单数据，源订单行项目数量: {len(ap_list)}")
                     new_order_data = _copy_order_data(source_order, query, extracted)
@@ -2545,6 +2578,21 @@ async def sd_ai_query(
                     # get_order_detail 应该已经包含了客户信息，但如果还没有，我们需要确保它被设置
                     pass  # get_order_detail 应该已经包含了客户信息
                 
+                # 如果LLM没有提取到销售组或销售办事处信息，使用专门的LLM函数进行语义理解
+                if not extracted or (not extracted.get("sales_group") and not extracted.get("sales_office")):
+                    logger.info("LLM未提取到销售组或销售办事处信息，使用专门的LLM函数进行语义理解")
+                    llm_modifications = await _extract_sales_modifications_with_llm(query)
+                    if llm_modifications.get("sales_group") and not extracted.get("sales_group"):
+                        if not extracted:
+                            extracted = {}
+                        extracted["sales_group"] = llm_modifications.get("sales_group")
+                        logger.info(f"通过专门的LLM函数提取到销售组: {extracted['sales_group']}")
+                    if llm_modifications.get("sales_office") and not extracted.get("sales_office"):
+                        if not extracted:
+                            extracted = {}
+                        extracted["sales_office"] = llm_modifications.get("sales_office")
+                        logger.info(f"通过专门的LLM函数提取到销售办事处: {extracted['sales_office']}")
+                
                 # 复制订单数据
                 new_order_data = _copy_order_data(yesterday_order, query, extracted)
                 
@@ -2564,15 +2612,18 @@ async def sd_ai_query(
                 if "_sales_group_keyword" in new_order_data:
                     keyword = new_order_data.pop("_sales_group_keyword")
                     logger.info(f"开始查找销售组，关键词: '{keyword}'")
+                    # 先清除原订单的销售组信息，确保使用新的销售组
+                    old_vkgrp = new_order_data.get("vkgrp")
+                    old_vkgrpName = new_order_data.get("vkgrpName")
+                    logger.info(f"原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
+                    
                     sales_group = await sd_service.get_sales_group_by_name(keyword)
                     
                     if sales_group:
+                        # 强制设置新的销售组，覆盖原订单的销售组信息
                         new_order_data["vkgrp"] = sales_group.get("vkgrp")
                         new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
                         logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
-                        # 清除原订单的销售组信息，确保使用新的销售组
-                        if "vkgrpName" in new_order_data and not new_order_data.get("vkgrpName"):
-                            new_order_data["vkgrpName"] = sales_group.get("bezei") or ""
                     else:
                         logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: {new_order_data.get('vkgrp', 'N/A')}")
                 else:
@@ -2900,6 +2951,125 @@ def _parse_error_and_get_solution(error_msg: str, vbeln: str = None) -> Dict[str
     return solution_info
 
 
+async def _extract_sales_modifications_with_llm(query: str) -> Dict[str, Optional[str]]:
+    """
+    使用LLM从用户查询中提取销售组和销售办事处的修改信息（语义理解）
+    
+    Args:
+        query: 用户查询文本
+        
+    Returns:
+        {
+            "sales_group": "销售组名称（如果提到）",
+            "sales_office": "销售办事处名称（如果提到）"
+        }
+    """
+    # 检查是否启用LLM
+    use_llm = os.getenv("USE_LLM_SD_AGENT", "true").lower() == "true"
+    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
+    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    openai_model = os.getenv("SD_AGENT_LLM_MODEL", "qwen-max-latest")
+    
+    if not use_llm or not openai_api_key or not openai_base_url:
+        return {"sales_group": None, "sales_office": None}
+    
+    try:
+        system_prompt = """你是一个销售与分销(SD)系统的智能助手。请从用户的查询中提取销售组和销售办事处的修改信息。
+
+请仔细分析用户的查询，识别以下信息：
+1. **销售组修改**：如果用户提到要修改销售组，提取新的销售组名称
+   - 常见表达："销售组改为XXX"、"改为XXX销售组"、"销售组改成XXX"、"改成XXX销售组"、"销售组修改为XXX"、"修改销售组为XXX"、"将销售组改为XXX"、"把销售组改为XXX"等
+   - 示例：
+     * "销售组改为经销商销售组" -> sales_group: "经销商销售组"
+     * "改为经销商销售组" -> sales_group: "经销商销售组"
+     * "销售组改成大客户销售组" -> sales_group: "大客户销售组"
+     * "将销售组改为直销组" -> sales_group: "直销组"
+     * "销售组改为经销商" -> sales_group: "经销商"（即使不完整也要提取）
+
+2. **销售办事处修改**：如果用户提到要修改销售办事处，提取新的销售办事处名称
+   - 常见表达："销售办事处改为XXX"、"改为XXX办事处"、"办事处改为XXX"、"改成XXX办事处"等
+   - 或者直接提到地区名称："华东"、"华北"、"华南"、"西南"、"西北"、"华中"
+   - 示例：
+     * "销售办事处改为华东" -> sales_office: "华东"
+     * "改为华东办事处" -> sales_office: "华东"
+     * "华东" -> sales_office: "华东"
+
+请以JSON格式返回结果，格式如下：
+{
+    "sales_group": "销售组名称（如果提到，否则为null）",
+    "sales_office": "销售办事处名称（如果提到，否则为null）"
+}
+
+注意：
+- 即使表达不完整，也要提取（如"经销商"、"大客户"等）
+- 如果用户没有提到修改销售组或销售办事处，对应字段返回null
+- 只提取用户明确提到的修改信息，不要猜测或推断"""
+
+        user_prompt = f"用户查询：{query}\n\n请提取销售组和销售办事处的修改信息。"
+        
+        resp = requests.post(
+            f"{openai_base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {openai_api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": openai_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 200
+            },
+            timeout=10
+        )
+        
+        resp.raise_for_status()
+        data = resp.json()
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        
+        if content:
+            # 尝试解析JSON
+            import json
+            try:
+                # 提取JSON部分（可能包含markdown代码块）
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
+                
+                result = json.loads(content)
+                sales_group = result.get("sales_group")
+                sales_office = result.get("sales_office")
+                
+                # 如果提取到值，去除null字符串
+                if sales_group and sales_group.lower() == "null":
+                    sales_group = None
+                if sales_office and sales_office.lower() == "null":
+                    sales_office = None
+                
+                logger.info(f"LLM提取销售修改信息成功: sales_group={sales_group}, sales_office={sales_office}")
+                return {
+                    "sales_group": sales_group if sales_group else None,
+                    "sales_office": sales_office if sales_office else None
+                }
+            except json.JSONDecodeError as e:
+                logger.warning(f"LLM返回的JSON解析失败: {e}, 内容: {content}")
+                return {"sales_group": None, "sales_office": None}
+        else:
+            logger.warning("LLM返回空内容")
+            return {"sales_group": None, "sales_office": None}
+            
+    except Exception as e:
+        logger.warning(f"LLM提取销售修改信息失败: {e}")
+        return {"sales_group": None, "sales_office": None}
+
+
 def _copy_order_data(order_data: Dict[str, Any], query: str, extracted: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     复制订单数据并修改销售办事处和销售组
@@ -2946,62 +3116,22 @@ def _copy_order_data(order_data: Dict[str, Any], query: str, extracted: Optional
     if not new_order.get("kunnrWev") and new_order.get("kunnrAgv"):
         new_order["kunnrWev"] = new_order["kunnrAgv"]
     
-    # 从LLM提取的信息中获取销售办事处（优先），如果没有则使用关键词匹配作为fallback
+    # 从LLM提取的信息中获取销售办事处（优先）
     sales_office_keyword = None
     if extracted and extracted.get("sales_office"):
         sales_office_keyword = extracted.get("sales_office")
         logger.info(f"从LLM提取到销售办事处关键词: {sales_office_keyword}")
-    else:
-        # Fallback: 使用关键词匹配（仅在LLM未提取到时使用）
-        query_lower = query.lower()
-        if "华东" in query or "华东办事处" in query:
-            sales_office_keyword = "华东"
-        elif "华北" in query or "华北办事处" in query:
-            sales_office_keyword = "华北"
-        elif "华南" in query or "华南办事处" in query:
-            sales_office_keyword = "华南"
-        elif "西南" in query or "西南办事处" in query:
-            sales_office_keyword = "西南"
-        elif "西北" in query or "西北办事处" in query:
-            sales_office_keyword = "西北"
-        elif "华中" in query or "华中办事处" in query:
-            sales_office_keyword = "华中"
     
     # 如果指定了销售办事处关键词，需要异步获取（这里先设置一个标记，由调用方处理）
     if sales_office_keyword:
         new_order["_sales_office_keyword"] = sales_office_keyword
         logger.info(f"提取到销售办事处关键词: {sales_office_keyword}")
     
-    # 从LLM提取的信息中获取销售组（优先），如果没有则使用正则匹配作为fallback
+    # 从LLM提取的信息中获取销售组（优先）
     sales_group_keyword = None
     if extracted and extracted.get("sales_group"):
         sales_group_keyword = extracted.get("sales_group")
         logger.info(f"从LLM提取到销售组关键词: {sales_group_keyword}")
-    else:
-        # Fallback: 使用正则匹配（仅在LLM未提取到时使用）
-        if "销售组" in query or "销售组改为" in query or ("改为" in query and "销售组" in query):
-            # 提取销售组名称（在"改为"、"销售组改为"等关键词之后）
-            # 支持引号中的内容，如："销售组改为"经销商销售组""
-            # 支持带空格的词组，如："销售组改为经销商销售组"
-            patterns = [
-                r"销售组改为\s*[""']([^""']+)[""']",  # 匹配引号中的完整内容（优先匹配）
-                r"销售组改为[：:\s]*([^，,。.\n并]+?)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文，冒号可选，使用非贪婪匹配）
-                r"改为\s*[""']([^""']+)[""']",  # 匹配引号中的完整内容（优先匹配）
-                r"改为[：:\s]+([^，,。.\n并]+?)(?=\s*(?:并|，|,|。|$)|$)",  # 匹配到"并"、逗号、句号或结束符（允许空格和中文，使用非贪婪匹配）
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, query)
-                if match:
-                    sales_group_keyword = match.group(1).strip()
-                    # 移除可能的引号
-                    sales_group_keyword = sales_group_keyword.strip('"').strip("'").strip()
-                    # 如果提取到的内容包含"销售组"关键词，需要进一步处理
-                    if "销售组" in sales_group_keyword:
-                        # 移除"销售组"关键词，只保留名称部分
-                        sales_group_keyword = sales_group_keyword.replace("销售组", "").strip()
-                    if sales_group_keyword:
-                        logger.info(f"使用正则表达式 '{pattern}' 提取到销售组关键词: {sales_group_keyword}")
-                        break
     
     # 如果指定了销售组关键词，需要异步获取（这里先设置一个标记，由调用方处理）
     if sales_group_keyword:

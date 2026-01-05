@@ -745,6 +745,47 @@ class SDService:
         
         return None
     
+    async def get_latest_order(self) -> Optional[Dict[str, Any]]:
+        """
+        获取最新的销售订单（按创建时间倒序，第一条）
+        
+        Returns:
+            订单详情数据，如果不存在则返回None
+        """
+        # 查询订单列表（后端默认按创建时间倒序排列，第一条就是最新的）
+        params = {
+            "current": 1,
+            "size": 1
+        }
+        
+        result = await self._request(
+            method="GET",
+            path="/sinocst-module-sd/sinocst-vbak/vbak/list",
+            params=params
+        )
+        
+        data = result.get("data", {})
+        records = data.get("records", [])
+        
+        if records and len(records) > 0:
+            # 获取订单详情
+            vbeln = records[0].get("vbeln")
+            if vbeln:
+                detail_result = await self.get_order_detail(vbeln)
+                detail_data = detail_result.get("data")
+                # 检查返回的数据类型：如果是列表，取第一个元素；如果是字典，直接使用
+                if isinstance(detail_data, list):
+                    if len(detail_data) > 0:
+                        return detail_data[0]
+                    else:
+                        return None
+                elif isinstance(detail_data, dict):
+                    return detail_data
+                else:
+                    return None
+        
+        return None
+    
     async def create_sales_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         创建销售订单
@@ -820,14 +861,18 @@ class SDService:
         
         # 规范化关键词（去除空格，转为小写用于匹配）
         keyword_normalized = name_keyword.strip().lower()
+        # 移除常见的后缀词，提高匹配灵活性
+        keyword_clean = keyword_normalized.replace("销售组", "").replace("组", "").strip()
         
         # 优先匹配：完全匹配（忽略大小写和空格）
         for group in records:
             bezei = (group.get("bezei", "") or "").strip()
             vkgrp = (group.get("vkgrp", "") or "").strip()
+            bezei_lower = bezei.lower()
+            vkgrp_lower = vkgrp.lower()
             
             # 完全匹配（忽略大小写）
-            if bezei.lower() == keyword_normalized or vkgrp.lower() == keyword_normalized:
+            if bezei_lower == keyword_normalized or vkgrp_lower == keyword_normalized:
                 logger.info(f"找到完全匹配的销售组: {vkgrp} - {bezei}")
                 return group
         
@@ -835,10 +880,26 @@ class SDService:
         for group in records:
             bezei = (group.get("bezei", "") or "").strip()
             vkgrp = (group.get("vkgrp", "") or "").strip()
+            bezei_lower = bezei.lower()
+            vkgrp_lower = vkgrp.lower()
             
             # 包含匹配（忽略大小写）
-            if keyword_normalized in bezei.lower() or keyword_normalized in vkgrp.lower():
+            if keyword_normalized in bezei_lower or keyword_normalized in vkgrp_lower:
                 logger.info(f"找到包含匹配的销售组: {vkgrp} - {bezei}")
+                return group
+        
+        # 第三优先级：如果关键词包含"销售组"等后缀，尝试去掉后缀后匹配
+        if keyword_clean and keyword_clean != keyword_normalized:
+            for group in records:
+                bezei = (group.get("bezei", "") or "").strip()
+                vkgrp = (group.get("vkgrp", "") or "").strip()
+                bezei_clean = bezei.lower().replace("销售组", "").replace("组", "").strip()
+                vkgrp_clean = vkgrp.lower().replace("销售组", "").replace("组", "").strip()
+                
+                # 清理后的匹配
+                if (keyword_clean in bezei_clean or keyword_clean in vkgrp_clean or 
+                    bezei_clean in keyword_clean or vkgrp_clean in keyword_clean):
+                    logger.info(f"找到清理后匹配的销售组: {vkgrp} - {bezei} (关键词: {keyword_clean})")
                 return group
         
         # 如果都没匹配到，记录所有销售组信息用于调试

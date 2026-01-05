@@ -148,14 +148,15 @@ def _extract_material_number(text: str) -> Optional[str]:
     """从文本中提取物料号"""
     patterns = [
         r"(?:物料号|物料|MATNR)[\s\-:]?([A-Z0-9\-]+)",
-        r"([A-Z]{1,}[0-9]{6,})",
+        r"([A-Z]{1,}[0-9]{4,})",  # 支持M0006这种格式（至少4位数字）
+        r"([A-Z]{1,}[0-9]{6,})",  # 支持更长的物料号
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            matnr = match.group(1).strip()
-            if len(matnr) >= 6:
+            matnr = match.group(1).strip().upper()  # 转为大写，统一格式
+            if len(matnr) >= 5:  # M0006 是5位，降低最小长度要求
                 return matnr
     
     return None
@@ -1767,6 +1768,35 @@ async def pp_ai_query(
                         "message": f"销售订单 {vbeln} 没有行项目，无法创建生产订单"
                     }
                 
+                # 如果用户指定了物料号，只筛选匹配的行项目
+                specified_matnr = context.get("matnr") or extracted.get("matnr") or _extract_material_number(query)
+                if specified_matnr:
+                    # 规范化物料号（转为大写，去除空格）
+                    specified_matnr = str(specified_matnr).strip().upper()
+                    logger.info(f"用户指定了物料号: {specified_matnr}，筛选匹配的行项目")
+                    original_count = len(ap_list)
+                    # 保存原始列表，用于错误提示
+                    original_ap_list = ap_list.copy()
+                    # 改进匹配逻辑：支持大小写不敏感和格式容错
+                    filtered_list = []
+                    for item in ap_list:
+                        item_matnr = str(item.get("matnr", "")).strip().upper()
+                        if item_matnr == specified_matnr:
+                            filtered_list.append(item)
+                            logger.info(f"找到匹配的行项目: posnr={item.get('posnr')}, matnr={item_matnr}")
+                    
+                    ap_list = filtered_list
+                    logger.info(f"筛选后行项目数量: {len(ap_list)} (原始: {original_count})")
+                    if len(ap_list) == 0:
+                        # 如果没找到，记录所有行项目的物料号用于调试
+                        all_matnrs = [str(item.get("matnr", "")).strip() for item in original_ap_list if item.get("matnr")]
+                        logger.warning(f"未找到匹配的物料号。用户指定: {specified_matnr}, 订单中的物料号: {all_matnrs}")
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"销售订单 {vbeln} 中没有找到物料号 {specified_matnr} 的行项目。订单中的物料号: {', '.join(set(all_matnrs)) if all_matnrs else '无'}"
+                    }
+                
                 # 2. 为每个行项目创建生产订单
                 created_orders = []
                 errors = []
@@ -1837,22 +1867,31 @@ async def pp_ai_query(
                             
                             if bom_resb_list:
                                 logger.info(f"找到 {len(bom_resb_list)} 个BOM组件")
-                                # 将BOM组件转换为ResbDTO格式
+                                # 使用字典进行去重，key为：物料号-工厂-库存地点-工序号
+                                unique_resb_map = {}
+                                
+                                # 将BOM组件转换为ResbDTO格式并进行去重
                                 for bom_item in bom_resb_list:
                                     # 计算需求数量 = BOM数量 * 订单数量
                                     bom_menge = float(bom_item.get("menge", 0) or 0)
                                     bdmng = bom_menge * zmeng
                                     
+                                    # 获取基础字段
+                                    matnr = bom_item.get("idnrk", "").strip()  # BOM组件物料号
+                                    bom_werks = bom_item.get("pswrk") or werks  # 工厂
+                                    bom_lgort = bom_item.get("lgort", "").strip()  # 库存地点（如果BOM中有）
+                                    bom_vornr = (bom_item.get("vornr", "") or bom_item.get("sortf", "")).strip()  # 工序号
+                                    
                                     resb_item = {
-                                        "matnr": bom_item.get("idnrk", ""),  # BOM组件物料号
+                                        "matnr": matnr,
                                         "maktx": bom_item.get("idnrkMaxtx", "") or bom_item.get("idnrkMaktx", ""),  # 物料描述
                                         "bdmng": bdmng,  # 需求数量（BOM数量 * 订单数量）
                                         "meins": bom_item.get("meins", "PC"),  # 单位
                                         "erfmg": bom_menge,  # 录入数量（BOM中的数量）
                                         "erfme": bom_item.get("meins", "PC"),  # 条目单位
-                                        "werks": bom_item.get("pswrk") or werks,  # 工厂
-                                        "lgort": bom_item.get("lgort", ""),  # 库存地点（如果BOM中有）
-                                        "vornr": bom_item.get("vornr", "") or bom_item.get("sortf", ""),  # 工序号（优先从vornr获取，其次从sortf获取）
+                                        "werks": bom_werks,
+                                        "lgort": bom_lgort,
+                                        "vornr": bom_vornr,
                                         "postp": bom_item.get("postp", "L"),  # 项目类别
                                         "posnr": bom_item.get("posnr", ""),  # BOM项目号
                                         "prvbe": bom_item.get("prvbe", ""),  # 生产供应区域
@@ -1889,7 +1928,24 @@ async def pp_ai_query(
                                     if not resb_item.get("vornr"):
                                         resb_item["vornr"] = "0010"
                                     
-                                    resb_list.append(resb_item)
+                                    # 构建唯一键：物料号-工厂-库存地点-工序号（与Java后端保持一致）
+                                    unique_key = f"{resb_item['matnr']}|{resb_item['werks']}|{resb_item['lgort']}|{resb_item['vornr']}"
+                                    
+                                    if unique_key not in unique_resb_map:
+                                        # 如果不存在，直接添加
+                                        unique_resb_map[unique_key] = resb_item
+                                    else:
+                                        # 如果已存在，合并数量（累加）
+                                        existing_resb = unique_resb_map[unique_key]
+                                        existing_bdmng = existing_resb.get("bdmng", 0) or 0
+                                        current_bdmng = resb_item.get("bdmng", 0) or 0
+                                        existing_resb["bdmng"] = existing_bdmng + current_bdmng
+                                        logger.warning(f"检测到重复的BOM组件，已合并数量。物料号: {resb_item['matnr']}, 工厂: {resb_item['werks']}, 库存地点: {resb_item['lgort']}, 工序号: {resb_item['vornr']}, 原数量: {existing_bdmng}, 新增数量: {current_bdmng}, 合并后数量: {existing_resb['bdmng']}")
+                                
+                                # 将去重后的组件添加到resb_list
+                                resb_list.extend(unique_resb_map.values())
+                                if len(unique_resb_map) < len(bom_resb_list):
+                                    logger.info(f"BOM组件去重完成，原始数量: {len(bom_resb_list)}, 去重后数量: {len(unique_resb_map)}")
                             else:
                                 logger.warning(f"物料 {matnr} 在工厂 {werks} 下没有BOM组件")
                         else:

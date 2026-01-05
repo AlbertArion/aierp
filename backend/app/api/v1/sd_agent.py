@@ -269,7 +269,7 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 10. POST_DELIVERY - 交货单过账（过账、发货过账、交货单过账等）
 11. CREATE_INVOICE - 创建发票（开票、创建发票、生成发票等）
 12. COPY_ORDER - 复制订单（复制订单、基于订单创建等）
-13. CREATE_SALES_ORDER - 创建销售订单（创建销售订单、基于昨天的最后一个订单复制等）
+13. CREATE_SALES_ORDER - 创建销售订单（创建销售订单、基于最新的订单复制等）
 14. NAVIGATE_INVOICE - 跳转到发票页面
 15. NAVIGATE_DELIVERY - 跳转到交货单页面
 16. NAVIGATE_DOCUMENT_FLOW - 跳转到单据流页面
@@ -492,9 +492,12 @@ def _identify_intent(text: str) -> str:
     if any(keyword in text_lower for keyword in ["开票", "创建发票", "生成发票", "为这个外向交货单开票", "为交货单开票"]):
         return "CREATE_INVOICE"
     
-    # 创建销售订单（基于昨天的最后一个订单复制）
-    if any(keyword in text_lower for keyword in ["创建销售订单", "复制订单", "基于", "昨天的", "最后一个订单"]):
-        if "复制" in text_lower or "基于" in text_lower:
+    # 创建销售订单（基于最新的订单复制）
+    if any(keyword in text_lower for keyword in ["创建销售订单", "复制订单", "基于", "最新的", "最后一个订单"]):
+        # 如果提到"创建销售订单"，直接识别为CREATE_SALES_ORDER
+        if "创建销售订单" in text_lower:
+            return "CREATE_SALES_ORDER"
+        elif "复制" in text_lower or "基于" in text_lower:
             return "CREATE_SALES_ORDER"
     
     # 默认：闲聊
@@ -2243,6 +2246,27 @@ async def sd_ai_query(
                         "message": f"订单{vbeln}不存在或无法获取订单信息"
                     }
                 
+                # 检查返回的数据类型：如果是列表，取第一个元素；如果是字典，直接使用
+                # 需要递归处理，因为可能是嵌套列表
+                while isinstance(source_order, list):
+                    if len(source_order) == 0:
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"订单{vbeln}不存在或无法获取订单信息"
+                        }
+                    source_order = source_order[0]
+                    logger.warning(f"get_order_detail返回的是列表，取第一个元素: {type(source_order)}")
+                
+                # 最终检查：确保是字典类型
+                if not isinstance(source_order, dict):
+                    logger.error(f"get_order_detail返回的数据类型不正确: {type(source_order)}, 数据: {source_order}")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "message": f"获取订单{vbeln}详情时数据类型错误，请联系管理员"
+                    }
+                
                 # 记录源订单信息
                 logger.info(f"获取到源订单 {vbeln} 的详情，订单类型: {source_order.get('auart')}, 客户: {source_order.get('kunnrAgvName')}")
                 
@@ -2307,15 +2331,28 @@ async def sd_ai_query(
                     old_vkgrpName = new_order_data.get("vkgrpName")
                     logger.info(f"原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
                     
+                    # 先清除旧的销售组信息，避免影响新销售组的设置
+                    if "vkgrp" in new_order_data:
+                        del new_order_data["vkgrp"]
+                    if "vkgrpName" in new_order_data:
+                        del new_order_data["vkgrpName"]
+                    
                     sales_group = await sd_service.get_sales_group_by_name(keyword)
                     
                     if sales_group:
                         # 强制设置新的销售组，覆盖原订单的销售组信息
                         new_order_data["vkgrp"] = sales_group.get("vkgrp")
                         new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
-                        logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
+                        logger.info(f"已设置销售组为：vkgrp={new_order_data['vkgrp']}, vkgrpName={new_order_data.get('vkgrpName', '')}")
+                        # 记录最终设置的销售组信息，用于验证
+                        logger.info(f"新订单数据中的销售组字段: vkgrp={new_order_data.get('vkgrp')}, vkgrpName={new_order_data.get('vkgrpName')}")
                     else:
-                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: {new_order_data.get('vkgrp', 'N/A')}")
+                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
+                        # 如果没找到，恢复原订单的销售组
+                        if old_vkgrp:
+                            new_order_data["vkgrp"] = old_vkgrp
+                        if old_vkgrpName:
+                            new_order_data["vkgrpName"] = old_vkgrpName
                 else:
                     logger.info("未检测到销售组修改请求，保持原订单的销售组")
                 
@@ -2336,7 +2373,23 @@ async def sd_ai_query(
                     # 获取新创建的订单详情
                     try:
                         new_order_detail = await sd_service.get_order_detail(new_vbeln)
-                        order_data = new_order_detail.get("data") if new_order_detail.get("code") == 200 else None
+                        order_data = None
+                        if new_order_detail.get("code") == 200:
+                            order_data = new_order_detail.get("data")
+                            # 检查返回的数据类型：如果是列表，取第一个元素；如果是字典，直接使用
+                            # 需要递归处理，因为可能是嵌套列表
+                            while isinstance(order_data, list):
+                                if len(order_data) > 0:
+                                    order_data = order_data[0]
+                                    logger.warning(f"get_order_detail返回的是列表，取第一个元素: {type(order_data)}")
+                                else:
+                                    order_data = None
+                                    break
+                            
+                            # 最终检查：确保是字典类型
+                            if order_data and not isinstance(order_data, dict):
+                                logger.error(f"get_order_detail返回的数据类型不正确: {type(order_data)}")
+                                order_data = None
                         
                         if not order_data:
                             logger.warning(f"订单 {new_vbeln} 创建成功，但获取订单详情失败：{new_order_detail}")
@@ -2424,6 +2477,27 @@ async def sd_ai_query(
                             "message": f"订单{vbeln_from_extract}不存在或无法获取订单信息"
                         }
                     
+                    # 检查返回的数据类型：如果是列表，取第一个元素；如果是字典，直接使用
+                    # 需要递归处理，因为可能是嵌套列表
+                    while isinstance(source_order, list):
+                        if len(source_order) == 0:
+                            return {
+                                "success": False,
+                                "intent": intent,
+                                "message": f"订单{vbeln_from_extract}不存在或无法获取订单信息"
+                            }
+                        source_order = source_order[0]
+                        logger.warning(f"get_order_detail返回的是列表，取第一个元素: {type(source_order)}")
+                    
+                    # 最终检查：确保是字典类型
+                    if not isinstance(source_order, dict):
+                        logger.error(f"get_order_detail返回的数据类型不正确: {type(source_order)}, 数据: {source_order}")
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"获取订单{vbeln_from_extract}详情时数据类型错误，请联系管理员"
+                        }
+                    
                     # 记录源订单信息
                     logger.info(f"获取到源订单 {vbeln_from_extract} 的详情，订单类型: {source_order.get('auart')}, 客户: {source_order.get('kunnrAgvName')}")
                     
@@ -2479,6 +2553,38 @@ async def sd_ai_query(
                         else:
                             logger.warning(f"未找到包含'{keyword}'的销售办事处，保持原订单的销售办事处")
                     
+                    # 如果指定了销售组关键词，查找并设置销售组
+                    if "_sales_group_keyword" in new_order_data:
+                        keyword = new_order_data.pop("_sales_group_keyword")
+                        logger.info(f"开始查找销售组，关键词: '{keyword}'")
+                        # 先清除原订单的销售组信息，确保使用新的销售组
+                        old_vkgrp = new_order_data.get("vkgrp")
+                        old_vkgrpName = new_order_data.get("vkgrpName")
+                        logger.info(f"原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
+                        
+                        # 先清除旧的销售组信息，避免影响新销售组的设置
+                        if "vkgrp" in new_order_data:
+                            del new_order_data["vkgrp"]
+                        if "vkgrpName" in new_order_data:
+                            del new_order_data["vkgrpName"]
+                        
+                        sales_group = await sd_service.get_sales_group_by_name(keyword)
+                        
+                        if sales_group:
+                            # 强制设置新的销售组，覆盖原订单的销售组信息
+                            new_order_data["vkgrp"] = sales_group.get("vkgrp")
+                            new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
+                            logger.info(f"已设置销售组为：vkgrp={new_order_data['vkgrp']}, vkgrpName={new_order_data.get('vkgrpName', '')}")
+                            # 记录最终设置的销售组信息，用于验证
+                            logger.info(f"新订单数据中的销售组字段: vkgrp={new_order_data.get('vkgrp')}, vkgrpName={new_order_data.get('vkgrpName')}")
+                        else:
+                            logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
+                            # 如果没找到，恢复原订单的销售组
+                            if old_vkgrp:
+                                new_order_data["vkgrp"] = old_vkgrp
+                            if old_vkgrpName:
+                                new_order_data["vkgrpName"] = old_vkgrpName
+                    
                     # 创建新订单
                     create_result = await sd_service.create_sales_order(new_order_data)
                     
@@ -2496,7 +2602,19 @@ async def sd_ai_query(
                         # 获取新创建的订单详情
                         try:
                             new_order_detail = await sd_service.get_order_detail(new_vbeln)
-                            order_data = new_order_detail.get("data") if new_order_detail.get("code") == 200 else None
+                            order_data = None
+                            if new_order_detail.get("code") == 200:
+                                order_data = new_order_detail.get("data")
+                                # 检查返回的数据类型：如果是列表，取第一个元素；如果是字典，直接使用
+                                if isinstance(order_data, list):
+                                    if len(order_data) > 0:
+                                        order_data = order_data[0]
+                                        logger.warning(f"get_order_detail返回的是列表，取第一个元素")
+                                    else:
+                                        order_data = None
+                                elif order_data and not isinstance(order_data, dict):
+                                    logger.error(f"get_order_detail返回的数据类型不正确: {type(order_data)}")
+                                    order_data = None
                             
                             if not order_data:
                                 logger.warning(f"订单 {new_vbeln} 创建成功，但获取订单详情失败：{new_order_detail}")
@@ -2552,31 +2670,34 @@ async def sd_ai_query(
                         "message": f"复制创建销售订单时出错：{str(e)}"
                     }
             
-            # 如果没有提取到订单号，使用原来的逻辑（基于昨天的最后一个订单）
+            # 如果没有提取到订单号，获取最新的销售订单并复制
             try:
-                # 获取昨天的最后一个订单
-                yesterday_order = await sd_service.get_yesterday_last_order()
+                # 获取最新的销售订单
+                latest_order = await sd_service.get_latest_order()
                 
-                if not yesterday_order:
+                if not latest_order:
                     return {
                         "success": False,
                         "intent": intent,
-                        "message": "未找到昨天的销售订单，无法复制创建新订单。"
+                        "message": "未找到销售订单，无法复制创建新订单。"
                     }
                 
                 # 检查源订单是否有行项目
-                if not yesterday_order.get("apList") or len(yesterday_order.get("apList", [])) == 0:
+                if not latest_order.get("apList") or len(latest_order.get("apList", [])) == 0:
                     return {
                         "success": False,
                         "intent": intent,
-                        "message": f"源订单 {yesterday_order.get('vbeln', '')} 没有行项目数据，无法复制创建新订单。请选择有行项目的订单进行复制。"
+                        "message": f"源订单 {latest_order.get('vbeln', '')} 没有行项目数据，无法复制创建新订单。请选择有行项目的订单进行复制。"
                     }
                 
                 # 确保源订单有客户信息（如果没有，从 vbpa 表查询）
-                if not yesterday_order.get("kunnrAgv") and not yesterday_order.get("kunnr"):
+                if not latest_order.get("kunnrAgv") and not latest_order.get("kunnr"):
                     # 尝试从订单详情中获取客户信息
                     # get_order_detail 应该已经包含了客户信息，但如果还没有，我们需要确保它被设置
                     pass  # get_order_detail 应该已经包含了客户信息
+                
+                # 记录源订单信息
+                logger.info(f"获取到最新订单 {latest_order.get('vbeln', '')} 的详情，订单类型: {latest_order.get('auart')}, 客户: {latest_order.get('kunnrAgvName')}")
                 
                 # 如果LLM没有提取到销售组或销售办事处信息，使用专门的LLM函数进行语义理解
                 if not extracted or (not extracted.get("sales_group") and not extracted.get("sales_office")):
@@ -2594,7 +2715,7 @@ async def sd_ai_query(
                         logger.info(f"通过专门的LLM函数提取到销售办事处: {extracted['sales_office']}")
                 
                 # 复制订单数据
-                new_order_data = _copy_order_data(yesterday_order, query, extracted)
+                new_order_data = _copy_order_data(latest_order, query, extracted)
                 
                 # 如果指定了销售办事处关键词，查找并设置销售办事处
                 if "_sales_office_keyword" in new_order_data:
@@ -2617,15 +2738,28 @@ async def sd_ai_query(
                     old_vkgrpName = new_order_data.get("vkgrpName")
                     logger.info(f"原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
                     
+                    # 先清除旧的销售组信息，避免影响新销售组的设置
+                    if "vkgrp" in new_order_data:
+                        del new_order_data["vkgrp"]
+                    if "vkgrpName" in new_order_data:
+                        del new_order_data["vkgrpName"]
+                    
                     sales_group = await sd_service.get_sales_group_by_name(keyword)
                     
                     if sales_group:
                         # 强制设置新的销售组，覆盖原订单的销售组信息
                         new_order_data["vkgrp"] = sales_group.get("vkgrp")
                         new_order_data["vkgrpName"] = sales_group.get("bezei") or sales_group.get("vkgrpName", "")
-                        logger.info(f"已设置销售组为：{new_order_data['vkgrp']} - {new_order_data.get('vkgrpName', '')}")
+                        logger.info(f"已设置销售组为：vkgrp={new_order_data['vkgrp']}, vkgrpName={new_order_data.get('vkgrpName', '')}")
+                        # 记录最终设置的销售组信息，用于验证
+                        logger.info(f"新订单数据中的销售组字段: vkgrp={new_order_data.get('vkgrp')}, vkgrpName={new_order_data.get('vkgrpName')}")
                     else:
-                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: {new_order_data.get('vkgrp', 'N/A')}")
+                        logger.warning(f"未找到包含'{keyword}'的销售组，保持原订单的销售组: vkgrp={old_vkgrp}, vkgrpName={old_vkgrpName}")
+                        # 如果没找到，恢复原订单的销售组
+                        if old_vkgrp:
+                            new_order_data["vkgrp"] = old_vkgrp
+                        if old_vkgrpName:
+                            new_order_data["vkgrpName"] = old_vkgrpName
                 else:
                     logger.info("未检测到销售组修改请求，保持原订单的销售组")
                 
@@ -2648,6 +2782,9 @@ async def sd_ai_query(
                         new_order_detail = await sd_service.get_order_detail(new_vbeln)
                         order_data = new_order_detail.get("data") if new_order_detail.get("code") == 200 else None
                         
+                        # 获取源订单号用于显示
+                        source_vbeln = latest_order.get("vbeln", "")
+                        
                         if not order_data:
                             logger.warning(f"订单 {new_vbeln} 创建成功，但获取订单详情失败：{new_order_detail}")
                             # 即使获取详情失败，也返回订单号
@@ -2657,8 +2794,9 @@ async def sd_ai_query(
                                 "data": {
                                     "type": "order_created",
                                     "order": None,
-                                    "message": f"销售订单创建成功！订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
-                                    "vbeln": new_vbeln
+                                    "message": f"基于最新订单{source_vbeln}复制创建新订单成功！新订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
+                                    "vbeln": new_vbeln,
+                                    "source_vbeln": source_vbeln
                                 }
                             }
                         
@@ -2668,21 +2806,24 @@ async def sd_ai_query(
                             "data": {
                                 "type": "order_created",
                                 "order": order_data,
-                                "message": f"销售订单创建成功！订单号：{new_vbeln}",
-                                "vbeln": new_vbeln
+                                "message": f"基于最新订单{source_vbeln}复制创建新订单成功！新订单号：{new_vbeln}",
+                                "vbeln": new_vbeln,
+                                "source_vbeln": source_vbeln
                             }
                         }
                     except Exception as e:
                         logger.error(f"获取订单 {new_vbeln} 详情失败: {str(e)}", exc_info=True)
                         # 即使获取详情失败，也返回订单号
+                        source_vbeln = latest_order.get("vbeln", "")
                         return {
                             "success": True,
                             "intent": intent,
                             "data": {
                                 "type": "order_created",
                                 "order": None,
-                                "message": f"销售订单创建成功！订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
-                                "vbeln": new_vbeln
+                                "message": f"基于最新订单{source_vbeln}复制创建新订单成功！新订单号：{new_vbeln}（订单详情获取失败，请稍后查看）",
+                                "vbeln": new_vbeln,
+                                "source_vbeln": source_vbeln
                             }
                         }
                 else:

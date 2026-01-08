@@ -821,7 +821,17 @@ class SDService:
         )
         
         data = result.get("data", {})
-        records = data.get("records", []) or data.get("data", [])
+        
+        # 处理不同的API响应格式
+        # 如果data是列表，直接使用
+        if isinstance(data, list):
+            records = data
+        # 如果data是字典，尝试获取records或data字段
+        elif isinstance(data, dict):
+            records = data.get("records", []) or data.get("data", [])
+        else:
+            logger.warning(f"API返回的data格式异常: {type(data)}")
+            records = []
         
         # 查找名称包含关键词的销售办事处
         for office in records:
@@ -853,7 +863,17 @@ class SDService:
         )
         
         data = result.get("data", {})
-        records = data.get("records", []) or data.get("data", [])
+        
+        # 处理不同的API响应格式
+        # 如果data是列表，直接使用
+        if isinstance(data, list):
+            records = data
+        # 如果data是字典，尝试获取records或data字段
+        elif isinstance(data, dict):
+            records = data.get("records", []) or data.get("data", [])
+        else:
+            logger.warning(f"API返回的data格式异常: {type(data)}")
+            records = []
         
         if not records:
             logger.warning(f"未获取到销售组列表")

@@ -2363,24 +2363,30 @@ async def pp_ai_query(
                             
                             # 修复：冻结库存不应该是负数，如果为负数，说明数据异常
                             if speme < 0:
-                                # 如果speme为负数，说明labst可能不准确，实际可用库存应该是|speme|
-                                actual_available_qty = max(0, labst - speme)  # labst - (-|speme|) = labst + |speme|
+                                # 如果speme为负数，说明labst可能不准确，实际可用库存应该是|speme|，但仍需减去预留库存
+                                # labst - (-|speme|) - insme = labst + |speme| - insme
+                                actual_available_qty = max(0, labst - speme - insme)
                                 if labst == 0:
                                     labst = abs(speme)
                                     speme = 0
+                                    # 修正后重新计算实际可用库存
+                                    actual_available_qty = max(0, labst - insme)
                                     logger.info(
                                         f"物料 {matnr} 在工厂 {werks} 库存地点 {lgort} 的库存数据修正："
-                                        f"speme为负数({speme_raw})，修正后总库存(labst)={labst}, 冻结库存(speme)=0"
+                                        f"speme为负数({speme_raw})，修正后总库存(labst)={labst}, 冻结库存(speme)=0, 预留库存(insme)={insme}, 实际可用={actual_available_qty}"
                                     )
                                 else:
                                     speme = 0
+                                    # 修正后重新计算实际可用库存
+                                    actual_available_qty = max(0, labst - insme)
                                     logger.warning(
                                         f"物料 {matnr} 在工厂 {werks} 库存地点 {lgort} 的库存数据异常："
-                                        f"冻结库存(speme)为负数({speme_raw})，已修正为0"
+                                        f"冻结库存(speme)为负数({speme_raw})，已修正为0，预留库存(insme)={insme}, 实际可用={actual_available_qty}"
                                     )
                             else:
-                                # 正常情况：计算实际可用库存 = 非限制库存 - 冻结库存
-                                actual_available_qty = max(0, labst - speme)
+                                # 正常情况：计算实际可用库存 = 非限制库存 - 冻结库存 - 预留库存
+                                # 预留库存（insme）是指已经被其他生产订单或交货单预留的库存，不能用于当前生产订单
+                                actual_available_qty = max(0, labst - speme - insme)
                             
                             # 根据实际库存判断物料是否充足
                             is_available = actual_available_qty >= bdmng

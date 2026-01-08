@@ -1473,23 +1473,56 @@ async def sd_ai_query(
                                 # 正常情况：计算实际可用库存 = 非限制库存 - 冻结库存
                                 actual_available_qty = max(0, labst - speme)
                             
+                            # 查询预留库存
+                            reserved_qty = 0.0
+                            try:
+                                # 计算自由库存（总库存 - 冻结库存）
+                                free_stock_qty = max(0, labst - speme)
+                                if free_stock_qty > 0:
+                                    # 查询预留库存（排除当前生产订单的预留）
+                                    reserved_result = await sd_service._request(
+                                        method="GET",
+                                        path="/sinocst-master-data/sinocst-lips/lips/getReservedQty",
+                                        params={
+                                            "mandt": source_info.get("mandt", "600"),
+                                            "matnr": matnr,
+                                            "werks": werks,
+                                            "lgort": lgort or "",
+                                            "excludeVbeln": "",  # 生产订单齐套检查时，交货单还未创建
+                                            "excludeVgbel": ""  # 生产订单齐套检查时，不需要排除销售订单
+                                        }
+                                    )
+                                    if reserved_result.get("code") == 200:
+                                        reserved_qty = float(reserved_result.get("data", 0) or 0)
+                                        # 预留库存不能超过自由库存数量
+                                        if reserved_qty > free_stock_qty:
+                                            reserved_qty = free_stock_qty
+                            except Exception as e:
+                                # 如果查询预留库存失败，设为0，不影响齐套检查
+                                logger.warning(f"查询物料 {matnr} 预留库存失败: {e}")
+                                reserved_qty = 0
+                            
+                            # 重新计算实际可用库存 = 总库存 - 冻结库存 - 预留库存
+                            actual_available_qty = max(0, labst - speme - reserved_qty)
+                            
                             # 添加日志：如果labst为0但实际可用库存大于0，记录警告
                             if labst == 0 and actual_available_qty > 0 and speme >= 0:
                                 logger.warning(
                                     f"物料 {matnr} 在工厂 {werks} 库存地点 {lgort} 的库存数据异常："
                                     f"总库存(labst)={labst}, 冻结库存(speme)={speme}, "
+                                    f"预留库存(reserved_qty)={reserved_qty}, "
                                     f"实际可用库存={actual_available_qty}, 质检库存(insme)={insme}, "
                                     f"受限制库存(einme)={einme}。"
                                     f"如果实际可用库存大于0，可能是查询返回的labst不正确，"
-                                    f"或者实际可用库存的计算考虑了其他因素（如预留库存、绑定订单库存等）。"
+                                    f"或者实际可用库存的计算考虑了其他因素（如绑定订单库存等）。"
                                 )
                             
                             # 根据实际库存判断物料是否充足
                             is_available = actual_available_qty >= bdmng
                             if is_available:
-                                message = f"库存充足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                                message = f"库存充足：需要 {bdmng} {meins}，总库存 {labst} {meins}，冻结 {speme} {meins}，预留 {reserved_qty} {meins}，实际可用 {actual_available_qty} {meins}"
                             else:
-                                message = f"库存不足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                                message = f"库存不足：需要 {bdmng} {meins}，总库存 {labst} {meins}，冻结 {speme} {meins}，预留 {reserved_qty} {meins}，实际可用 {actual_available_qty} {meins}"
                             
                             # 修复：如果物料充足且生产订单没有库存地点，默认选中自由库L001
                             if is_available and (not lgort or lgort.strip() == ""):
@@ -1506,7 +1539,8 @@ async def sd_ai_query(
                                 "meins": meins,
                                 "need_qty": bdmng,
                                 "labst": labst,
-                                "speme": speme,
+                                "speme": speme,  # 冻结库存
+                                "reserved_qty": reserved_qty,  # 预留库存
                                 "insme": insme,
                                 "actual_available_qty": actual_available_qty,
                                 "is_available": is_available,  # 根据实际库存判断
@@ -1722,6 +1756,38 @@ async def sd_ai_query(
                                 # 正常情况：计算实际可用库存 = 非限制库存 - 冻结库存
                                 actual_available_qty = max(0, labst - speme)
                             
+                            # 查询预留库存
+                            reserved_qty = 0.0
+                            try:
+                                # 计算自由库存（总库存 - 冻结库存）
+                                free_stock_qty = max(0, labst - speme)
+                                if free_stock_qty > 0:
+                                    # 查询预留库存（排除当前生产订单的预留）
+                                    reserved_result = await sd_service._request(
+                                        method="GET",
+                                        path="/sinocst-master-data/sinocst-lips/lips/getReservedQty",
+                                        params={
+                                            "mandt": source_info.get("mandt", "600"),
+                                            "matnr": matnr,
+                                            "werks": werks,
+                                            "lgort": lgort or "",
+                                            "excludeVbeln": "",  # 生产订单齐套检查时，交货单还未创建
+                                            "excludeVgbel": ""  # 生产订单齐套检查时，不需要排除销售订单
+                                        }
+                                    )
+                                    if reserved_result.get("code") == 200:
+                                        reserved_qty = float(reserved_result.get("data", 0) or 0)
+                                        # 预留库存不能超过自由库存数量
+                                        if reserved_qty > free_stock_qty:
+                                            reserved_qty = free_stock_qty
+                            except Exception as e:
+                                # 如果查询预留库存失败，设为0，不影响齐套检查
+                                logger.warning(f"查询物料 {matnr} 预留库存失败: {e}")
+                                reserved_qty = 0
+                            
+                            # 重新计算实际可用库存 = 总库存 - 冻结库存 - 预留库存
+                            actual_available_qty = max(0, labst - speme - reserved_qty)
+                            
                             # 构建物料项数据
                             material_item = {
                                 "matnr": matnr,
@@ -1732,13 +1798,14 @@ async def sd_ai_query(
                                 "meins": meins,
                                 "need_qty": bdmng,
                                 "labst": labst,
-                                "speme": speme,
+                                "speme": speme,  # 冻结库存
+                                "reserved_qty": reserved_qty,  # 预留库存
                                 "insme": insme,
                                 "actual_available_qty": actual_available_qty,
                                 "is_available": False,  # 因为这是not_enough_list中的物料
                                 "relatnr": item.get("relatnr"),  # 关联订单号
                                 "rspos": source_info.get("rspos") or "",  # 预留项目号
-                                "message": f"库存不足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                                "message": f"库存不足：需要 {bdmng} {meins}，总库存 {labst} {meins}，冻结 {speme} {meins}，预留 {reserved_qty} {meins}，实际可用 {actual_available_qty} {meins}"
                             }
                             not_enough_materials.append(material_item)
                         

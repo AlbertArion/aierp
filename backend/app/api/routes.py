@@ -3,7 +3,7 @@ from fastapi import FastAPI
 # 说明：集中注册各业务模块的路由
 
 def register_routes(app: FastAPI) -> None:
-    from .v1 import data, predict, process, orders, auth, work_reports, pricing, batch_pricing, sap_work_reports, sd_agent, pp_agent, mm_agent, business_issues, operation_evaluation, metric_config, agent_message, pp_agent_message, mm_agent_message
+    from .v1 import data, predict, process, orders, auth, work_reports, pricing, batch_pricing, sap_work_reports, sd_agent, pp_agent, mm_agent, fi_agent, co_agent, business_issues, operation_evaluation, metric_config, agent_message, pp_agent_message, mm_agent_message
 
     app.include_router(data.router, prefix="/api/data", tags=["data"])
     app.include_router(predict.router, prefix="/api/predict", tags=["predict"])
@@ -19,6 +19,8 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(pp_agent_message.router, prefix="/api", tags=["pp_agent_message"])
     app.include_router(mm_agent.router, prefix="/api", tags=["mm_agent"])
     app.include_router(mm_agent_message.router, prefix="/api", tags=["mm_agent_message"])
+    app.include_router(fi_agent.router, prefix="/api", tags=["fi_agent"])
+    app.include_router(co_agent.router, prefix="/api", tags=["co_agent"])
     app.include_router(agent_message.router, prefix="/api", tags=["agent_message"])
     app.include_router(business_issues.router, prefix="/api", tags=["业务问题"])
     app.include_router(operation_evaluation.router, prefix="/api", tags=["操作评估"])

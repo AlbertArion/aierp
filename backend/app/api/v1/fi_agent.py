@@ -22,7 +22,8 @@ def get_fi_service(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     blade_auth: Optional[str] = Header(None, alias="Blade-Auth"),
     x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
-    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
 ) -> FIService:
     """创建FIService实例，并传递认证token和租户信息"""
     service = FIService()
@@ -65,6 +66,11 @@ def get_fi_service(
     if x_tenant_id and x_tenant_id != "null" and x_tenant_id.strip() != "":
         service.set_tenant_id(x_tenant_id.strip())
         logger.info(f"设置tenantId: {x_tenant_id.strip()}")
+    
+    # 设置语言信息
+    if accept_language:
+        service.set_accept_language(accept_language)
+        logger.info(f"设置Accept-Language到FI服务: {accept_language}")
     
     return service
 
@@ -396,7 +402,8 @@ async def fi_ai_query(
     fi_service: FIService = Depends(get_fi_service),
     message_service: AgentMessageService = Depends(get_message_service),
     x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
-    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
 ) -> Dict[str, Any]:
     """
     FI模块AI查询接口

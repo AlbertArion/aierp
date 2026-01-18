@@ -21,6 +21,7 @@ class FIService:
         self.token = None  # 用户token，从请求中获取
         self.mandt = None  # 集团代码（mandt），从请求头X-Mandt或X-Tenant-Id获取
         self.tenant_id = None  # 租户ID，从请求头X-Tenant-Id获取
+        self.accept_language = None  # 语言环境，从请求头Accept-Language获取
         # 判断是否通过网关访问（网关端口通常是9015）
         self.is_gateway = "9015" in self.base_url or "gateway" in self.base_url.lower()
         # 网关地址（用于跨服务请求）
@@ -42,6 +43,10 @@ class FIService:
     def set_tenant_id(self, tenant_id: str):
         """设置租户ID"""
         self.tenant_id = tenant_id
+    
+    def set_accept_language(self, accept_language: str):
+        """设置语言环境"""
+        self.accept_language = accept_language
     
     def _build_path(self, path: str) -> str:
         """
@@ -159,6 +164,11 @@ class FIService:
         elif self.mandt:
             request_headers["X-Tenant-Id"] = self.mandt
             logger.info(f"已添加X-Tenant-Id头到请求（使用mandt值）: {self.mandt}")
+        
+        # 添加语言环境请求头
+        if self.accept_language:
+            request_headers["Accept-Language"] = self.accept_language
+            logger.info(f"已添加Accept-Language头到请求: {self.accept_language}")
         
         # 重试逻辑（指数退避）
         last_error = None

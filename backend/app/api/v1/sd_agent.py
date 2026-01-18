@@ -233,7 +233,287 @@ def _extract_purchase_order_number(text: str) -> Optional[str]:
     
     return None
 
-async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
+def _get_language_from_header(accept_language: Optional[str] = None) -> str:
+    """
+    从Accept-Language请求头获取语言代码
+    
+    Args:
+        accept_language: Accept-Language请求头的值（如 "tr-TR,tr;q=0.9,en;q=0.8"）
+    
+    Returns:
+        语言代码: "zh"（中文）、"en"（英文）、"tr"（土耳其语），默认返回"zh"
+    """
+    if not accept_language:
+        return "zh"
+    
+    # 解析Accept-Language头
+    # 格式: "tr-TR,tr;q=0.9,en;q=0.8" 或 "zh-CN,zh;q=0.9"
+    languages = accept_language.split(",")
+    if languages:
+        # 获取第一个语言
+        primary_lang = languages[0].strip().split(";")[0].strip()
+        
+        # 提取语言部分（支持 tr-TR, tr_TR, tr 等格式）
+        if "-" in primary_lang:
+            lang_code = primary_lang.split("-")[0].lower()
+        elif "_" in primary_lang:
+            lang_code = primary_lang.split("_")[0].lower()
+        else:
+            lang_code = primary_lang.lower()
+        
+        # 映射到标准语言代码
+        if lang_code.startswith("tr"):
+            return "tr"
+        elif lang_code.startswith("en"):
+            return "en"
+        elif lang_code.startswith("zh"):
+            return "zh"
+    
+    return "zh"  # 默认中文
+
+def _get_multilang_system_prompt(language: str = "zh") -> str:
+    """
+    根据语言环境生成多语言的system_prompt
+    
+    Args:
+        language: 语言代码 ("zh", "en", "tr")
+    
+    Returns:
+        对应语言的system_prompt
+    """
+    prompts = {
+        "zh": """你是销售与分销(SD)系统的智能助手。你的主要能力包括：
+1. 查询销售订单列表和详情
+2. ATP物料可用性检查
+3. 自动创建交货单
+4. 交货单过账
+5. 创建发票
+6. 复制订单
+7. 创建销售订单
+8. 查询采购订单详情（查看采购订单、采购订单详情等）
+
+当用户的问题不在你的能力范围内时，请友好地说明你能做什么，并给出一些示例。
+用简洁、专业、友好的中文回答。不要编造具体的数据或表格。""",
+        
+        "en": """You are an intelligent assistant for the Sales and Distribution (SD) system. Your main capabilities include:
+1. Query sales order list and details
+2. ATP material availability check
+3. Automatically create delivery documents
+4. Post delivery documents
+5. Create invoices
+6. Copy orders
+7. Create sales orders
+8. Query purchase order details (view purchase orders, purchase order details, etc.)
+
+When user questions are outside your capabilities, please kindly explain what you can do and provide some examples.
+Answer in concise, professional, and friendly English. Do not fabricate specific data or tables.""",
+        
+        "tr": """Satış ve Dağıtım (SD) sisteminin akıllı asistanısınız. Ana yetenekleriniz şunları içerir:
+1. Satış siparişi listesi ve detaylarını sorgulama
+2. ATP malzeme kullanılabilirlik kontrolü
+3. Otomatik teslimat belgesi oluşturma
+4. Teslimat belgesi deftere nakletme
+5. Fatura oluşturma
+6. Sipariş kopyalama
+7. Satış siparişi oluşturma
+8. Satın alma siparişi detaylarını sorgulama (satın alma siparişlerini görüntüleme, satın alma siparişi detayları vb.)
+
+Kullanıcı soruları yeteneklerinizin dışındaysa, lütfen ne yapabileceğinizi nazikçe açıklayın ve bazı örnekler verin.
+Kısa, profesyonel ve dostane Türkçe ile cevap verin. Belirli veriler veya tablolar uydurmayın."""
+    }
+    
+    return prompts.get(language, prompts["zh"])
+
+def _get_multilang_default_response(language: str = "zh") -> str:
+    """
+    根据语言环境生成默认回答
+    
+    Args:
+        language: 语言代码 ("zh", "en", "tr")
+    
+    Returns:
+        对应语言的默认回答
+    """
+    responses = {
+        "zh": """我是SD Agent，可以帮助您：
+1. 查询销售订单列表和详情（例如：查询销售订单列表、查看订单VB2025000059的详情）
+2. ATP物料可用性检查（例如：检查订单VB2025000059的ATP、检查库存）
+3. 创建交货单（例如：为订单VB2025000059创建交货单）
+4. 交货单过账（例如：为交货单8000000048过账）
+5. 创建发票（例如：为交货单8000000048开票）
+6. 复制订单（例如：复制订单VB2025000059）
+
+请告诉我您需要什么帮助？""",
+        
+        "en": """I am SD Agent, I can help you with:
+1. Query sales order list and details (e.g., query sales order list, view order VB2025000059 details)
+2. ATP material availability check (e.g., check ATP for order VB2025000059, check inventory)
+3. Create delivery documents (e.g., create delivery document for order VB2025000059)
+4. Post delivery documents (e.g., post delivery document 8000000048)
+5. Create invoices (e.g., create invoice for delivery document 8000000048)
+6. Copy orders (e.g., copy order VB2025000059)
+
+Please tell me what you need help with?""",
+        
+        "tr": """Ben SD Agent'ım, size şu konularda yardımcı olabilirim:
+1. Satış siparişi listesi ve detaylarını sorgulama (örneğin: satış siparişi listesini sorgula, VB2025000059 siparişinin detaylarını görüntüle)
+2. ATP malzeme kullanılabilirlik kontrolü (örneğin: VB2025000059 siparişi için ATP kontrolü, stok kontrolü)
+3. Teslimat belgesi oluşturma (örneğin: VB2025000059 siparişi için teslimat belgesi oluştur)
+4. Teslimat belgesi deftere nakletme (örneğin: 8000000048 teslimat belgesini deftere naklet)
+5. Fatura oluşturma (örneğin: 8000000048 teslimat belgesi için fatura oluştur)
+6. Sipariş kopyalama (örneğin: VB2025000059 siparişini kopyala)
+
+Lütfen neye ihtiyacınız olduğunu söyleyin?"""
+    }
+    
+    return responses.get(language, responses["zh"])
+
+def _get_multilang_navigation_message(language: str = "zh", route: str = "") -> str:
+    """
+    根据语言环境生成跳转消息
+    
+    Args:
+        language: 语言代码 ("zh", "en", "tr")
+        route: 路由名称（可选）
+    
+    Returns:
+        对应语言的跳转消息
+    """
+    messages = {
+        "zh": f"正在为您跳转到{route}页面..." if route else "正在为您跳转...",
+        "en": f"Navigating to {route} page..." if route else "Navigating...",
+        "tr": f"{route} sayfasına yönlendiriliyorsunuz..." if route else "Yönlendiriliyor..."
+    }
+    
+    return messages.get(language, messages["zh"])
+
+def _get_multilang_order_number_prompt(language: str = "zh", order_type: str = "sales") -> str:
+    """
+    根据语言环境生成要求提供订单号的提示
+    
+    Args:
+        language: 语言代码 ("zh", "en", "tr")
+        order_type: 订单类型 ("sales", "internal", "production", "purchase")
+    
+    Returns:
+        对应语言的提示消息
+    """
+    prompts = {
+        "zh": {
+            "sales": "请提供销售订单号，例如：查看订单VB2025000059\n\n或者您可以：\n1. 查询销售订单列表（例如：查询销售订单列表）\n2. 查看最近的订单",
+            "internal": "请提供内部订单号，例如：查看内部订单808000000008\n\n内部订单号通常是12位数字，以808开头。",
+            "production": "请提供生产订单号，例如：查看生产订单8900000103\n\n生产订单号通常是10位数字，如8900000103。",
+            "purchase": "请提供采购订单号，例如：查看采购订单1000000040\n\n采购订单号通常是10位数字，如1000000040。"
+        },
+        "en": {
+            "sales": "Please provide a sales order number, e.g., view order VB2025000059\n\nOr you can:\n1. Query sales order list (e.g., query sales order list)\n2. View recent orders",
+            "internal": "Please provide an internal order number, e.g., view internal order 808000000008\n\nInternal order numbers are usually 12-digit numbers starting with 808.",
+            "production": "Please provide a production order number, e.g., view production order 8900000103\n\nProduction order numbers are usually 10-digit numbers, such as 8900000103.",
+            "purchase": "Please provide a purchase order number, e.g., view purchase order 1000000040\n\nPurchase order numbers are usually 10-digit numbers, such as 1000000040."
+        },
+        "tr": {
+            "sales": "Lütfen bir satış siparişi numarası girin, örneğin: VB2025000059 siparişini görüntüle\n\nVeya şunları yapabilirsiniz:\n1. Satış siparişi listesini sorgula (örneğin: satış siparişi listesini sorgula)\n2. Son siparişleri görüntüle",
+            "internal": "Lütfen bir iç sipariş numarası girin, örneğin: 808000000008 iç siparişini görüntüle\n\nİç sipariş numaraları genellikle 808 ile başlayan 12 haneli sayılardır.",
+            "production": "Lütfen bir üretim siparişi numarası girin, örneğin: 8900000103 üretim siparişini görüntüle\n\nÜretim siparişi numaraları genellikle 8900000103 gibi 10 haneli sayılardır.",
+            "purchase": "Lütfen bir satın alma siparişi numarası girin, örneğin: 1000000040 satın alma siparişini görüntüle\n\nSatın alma siparişi numaraları genellikle 1000000040 gibi 10 haneli sayılardır."
+        }
+    }
+    
+    return prompts.get(language, prompts["zh"]).get(order_type, prompts["zh"]["sales"])
+
+def _get_multilang_intent_system_prompt(language: str = "zh") -> str:
+    """
+    根据语言环境生成多语言的意图识别system_prompt
+    
+    Args:
+        language: 语言代码 ("zh", "en", "tr")
+    
+    Returns:
+        对应语言的意图识别system_prompt
+    """
+    # 基础部分（所有语言通用，使用英文以确保模型理解）
+    base_prompt = """You are an intelligent assistant for the Sales and Distribution (SD) system. Analyze user queries and extract key information.
+
+Supported intent types:
+1. QUERY_ORDER_LIST - Query sales order list
+2. QUERY_ORDER_DETAIL - Query sales order details
+3. NAVIGATE_ORDER_DETAIL - Navigate to order detail page
+4. NAVIGATE_ORDER_LIST - Navigate to order list page
+5. NAVIGATE_ORDER_EDIT - Navigate to order edit page
+6. ATP_CHECK - Sales order ATP material availability check
+7. CHECK_PRODUCTION_ORDER_MATERIAL - Production order material availability check
+8. CHECK_INTERNAL_ORDER_MATERIAL - Internal order material availability check
+9. CREATE_DELIVERY - Create delivery document
+10. POST_DELIVERY - Post delivery document
+11. CREATE_INVOICE - Create invoice
+12. COPY_ORDER - Copy order
+13. CREATE_SALES_ORDER - Create sales order
+14. NAVIGATE_INVOICE - Navigate to invoice page
+15. NAVIGATE_DELIVERY - Navigate to delivery page
+16. NAVIGATE_DOCUMENT_FLOW - Navigate to document flow page
+17. QUERY_INTERNAL_ORDER - Query internal order details
+18. QUERY_PRODUCTION_ORDER - Query production order details
+19. QUERY_PURCHASE_ORDER - Query purchase order details
+20. SMALLTALK - Small talk or ask how to use
+
+Return results in JSON format:
+{
+    "intent": "intent_type",
+    "confidence": 0.0-1.0,
+    "extracted": {
+        "vbeln": "sales_order_number",
+        "delivery_vbeln": "delivery_number",
+        "invoice_vbeln": "invoice_number",
+        "aufnr": "production_order_number",
+        "internal_aufnr": "internal_order_number",
+        "ebeln": "purchase_order_number",
+        "sales_group": "sales_group_name",
+        "sales_office": "sales_office_name"
+    },
+    "reasoning": "brief explanation"
+}
+
+Notes:
+- Sales order numbers usually start with VB followed by digits, or are 10+ digit numbers
+- Delivery numbers are usually 8-digit numbers, may start with 8
+- Invoice numbers are usually 10-digit numbers
+- Production order numbers are usually 10-digit numbers (e.g., 8900000103)
+- Internal order numbers are usually 12-digit numbers starting with 808 (e.g., 808000000008)
+- Purchase order numbers are usually 10-digit numbers (e.g., 1000000040)
+- Confidence should be >=0.8 for clear intents, >=0.6 for ambiguous intents"""
+    
+    # 语言特定的说明
+    language_notes = {
+        "zh": """
+用户可能用中文提问。请理解中文查询并正确识别意图。""",
+        "en": """
+The user may ask in English. Please understand English queries and correctly identify intents.""",
+        "tr": """
+Kullanıcı Türkçe soru sorabilir. Lütfen Türkçe sorguları anlayın ve niyetleri doğru şekilde tanımlayın."""
+    }
+    
+    return base_prompt + language_notes.get(language, language_notes["zh"])
+
+def _get_multilang_user_prompt(text: str, language: str = "zh") -> str:
+    """
+    根据语言环境生成多语言的用户提示
+    
+    Args:
+        text: 用户查询文本
+        language: 语言代码 ("zh", "en", "tr")
+    
+    Returns:
+        对应语言的用户提示
+    """
+    prompts = {
+        "zh": f"用户查询：{text}\n\n请识别意图并提取关键信息。",
+        "en": f"User query: {text}\n\nPlease identify the intent and extract key information.",
+        "tr": f"Kullanıcı sorgusu: {text}\n\nLütfen niyeti tanımlayın ve anahtar bilgileri çıkarın."
+    }
+    
+    return prompts.get(language, prompts["zh"])
+
+async def _identify_intent_with_llm(text: str, language: str = "zh") -> Dict[str, Any]:
     """
     使用LLM识别用户意图（智能解析）
     
@@ -254,74 +534,8 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
         return None
     
     try:
-        system_prompt = """你是一个销售与分销(SD)系统的智能助手。请分析用户的查询意图，并提取关键信息。
-
-支持的意图类型：
-1. QUERY_ORDER_LIST - 查询销售订单列表（查询所有订单、订单列表、显示订单等）
-2. QUERY_ORDER_DETAIL - 查询销售订单详情（用户提到订单号、查看订单、订单详情等）
-3. NAVIGATE_ORDER_DETAIL - 跳转到订单详情页面（跳转、打开、进入订单详情等）
-4. NAVIGATE_ORDER_LIST - 跳转到订单列表页面（跳转到订单列表等）
-5. NAVIGATE_ORDER_EDIT - 跳转到订单编辑页面（修改、编辑订单等）
-6. ATP_CHECK - 销售订单ATP物料可用性检查（检查销售订单的atp、可用性、库存检查、物料可用、库存够等，注意：这是针对销售订单的）
-7. CHECK_PRODUCTION_ORDER_MATERIAL - 生产订单物料可用性检查（齐套性检查）（检查生产订单的物料可用性、齐套性检查等，注意：这是针对生产订单的，不是销售订单）
-8. CHECK_INTERNAL_ORDER_MATERIAL - 内部订单物料可用性检查（齐套性检查）（检查内部订单的物料可用性、齐套性检查等，注意：这是针对内部订单的，内部订单号通常是12位数字，如808000000008）
-9. CREATE_DELIVERY - 创建交货单（创建交货单、生成交货单、自动交货、交货等）
-10. POST_DELIVERY - 交货单过账（过账、发货过账、交货单过账等）
-11. CREATE_INVOICE - 创建发票（开票、创建发票、生成发票等）
-12. COPY_ORDER - 复制订单（复制订单、基于订单创建等）
-13. CREATE_SALES_ORDER - 创建销售订单（创建销售订单、基于最新的订单复制等）
-14. NAVIGATE_INVOICE - 跳转到发票页面
-15. NAVIGATE_DELIVERY - 跳转到交货单页面
-16. NAVIGATE_DOCUMENT_FLOW - 跳转到单据流页面
-17. QUERY_INTERNAL_ORDER - 查询内部订单详情（查看内部订单、内部订单详情、内部订单信息等，内部订单号通常是12位数字，如808000000008）
-18. QUERY_PRODUCTION_ORDER - 查询生产订单详情（查看生产订单、生产订单详情、生产订单信息等，生产订单号通常是10位数字，如8900000103）
-19. QUERY_PURCHASE_ORDER - 查询采购订单详情（查看采购订单、采购订单详情、采购订单信息等，采购订单号通常是10位数字，如1000000040）
-20. SMALLTALK - 闲聊或询问如何使用
-
-请以JSON格式返回结果，格式如下：
-{
-    "intent": "意图类型",
-    "confidence": 0.0-1.0的置信度,
-    "extracted": {
-        "vbeln": "销售订单号（如果提到）",
-        "delivery_vbeln": "交货单号（如果提到，通常是8位数字，可能以8开头）",
-        "invoice_vbeln": "发票号（如果提到）",
-        "aufnr": "生产订单号（如果提到，通常是10位数字，如8900000103）",
-        "internal_aufnr": "内部订单号（如果提到，通常是12位数字，如808000000008）",
-        "ebeln": "采购订单号（如果提到，通常是10位数字，如1000000040）",
-        "sales_group": "销售组名称（如果提到，如'经销商销售组'、'直销组'等）",
-        "sales_office": "销售办事处名称（如果提到，如'华东'、'华北'、'华南'、'西南'、'西北'、'华中'等）"
-    },
-    "reasoning": "简要说明识别理由"
-}
-
-注意：
-- 销售订单号通常是VB开头+数字，或纯数字（10位以上）
-- 交货单号通常是8位数字，可能以8开头（如8000000048）
-- 发票号通常是10位数字
-- 生产订单号通常是10位数字，如8900000103（注意区分：生产订单号是10位数字，销售订单号可能也是10位，但通常有VB前缀或上下文表明是销售订单）
-- **内部订单号通常是12位数字，如808000000008**（以808开头，用于内部成本核算）
-- **采购订单号通常是10位数字，如1000000040**（用于采购订单查询）
-- **销售组名称**：如果用户提到"销售组改为XXX"、"改为XXX销售组"、"销售组改成XXX"、"改成XXX销售组"、"销售组修改为XXX"、"修改销售组为XXX"、"将销售组改为XXX"、"把销售组改为XXX"等任何表达修改销售组的意图，都要提取XXX作为sales_group。注意：XXX可能是完整的销售组名称（如"经销商销售组"、"大客户销售组"、"直销组"等），也可能是不完整的名称（如"经销商"、"大客户"等），都要完整提取。
-- **销售办事处名称**：如果用户提到"华东"、"华北"、"华南"、"西南"、"西北"、"华中"等，提取对应的销售办事处名称作为sales_office。如果用户提到"销售办事处改为XXX"、"改为XXX办事处"等，也要提取XXX作为sales_office
-- 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等，应该是QUERY_ORDER_DETAIL
-- 如果用户提到"跳转到订单XXX"、"打开订单XXX"等，应该是NAVIGATE_ORDER_DETAIL
-- 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
-- **如果用户提到"内部订单"，应该识别为 QUERY_INTERNAL_ORDER，并将订单号提取为internal_aufnr**
-- **如果用户提到"生产订单"（没有提到齐套性检查），应该识别为 QUERY_PRODUCTION_ORDER，并将订单号提取为aufnr**
-- **重要区分**：
-  * 如果提到"生产订单"的"物料可用性"、"齐套性检查"等，应该识别为 CHECK_PRODUCTION_ORDER_MATERIAL，并将订单号提取为aufnr
-  * 如果仅提到"生产订单"（没有提到齐套性检查），应该识别为 QUERY_PRODUCTION_ORDER，并将订单号提取为aufnr
-  * 如果提到"内部订单"的"物料可用性"、"齐套性检查"等，应该识别为 CHECK_INTERNAL_ORDER_MATERIAL，并将订单号提取为internal_aufnr
-  * 如果提到"销售订单"或仅提到"订单"的"ATP"、"可用性检查"等，应该识别为 ATP_CHECK，并将订单号提取为vbeln
-  * 如果同时提到"生产订单"和"物料可用性"，必须识别为 CHECK_PRODUCTION_ORDER_MATERIAL，而不是 QUERY_PRODUCTION_ORDER
-  * 如果同时提到"内部订单"和"物料可用性"或"齐套性检查"，必须识别为 CHECK_INTERNAL_ORDER_MATERIAL，而不是 QUERY_INTERNAL_ORDER
-  * 如果仅提到"内部订单"（没有提到齐套性检查），应该识别为 QUERY_INTERNAL_ORDER，并将订单号提取为internal_aufnr
-  * **如果用户提到"采购订单"、"查看采购订单"等，应该识别为 QUERY_PURCHASE_ORDER，并将订单号提取为ebeln**
-- 优先提取订单号、交货单号、发票号、生产订单号、内部订单号、采购订单号、销售组名称，即使表达不完整也要识别
-- **置信度要求**：对于明确的意图（如包含订单号的查询），置信度应该>=0.8；对于模糊的意图，置信度可以>=0.6"""
-
-        user_prompt = f"用户查询：{text}\n\n请识别意图并提取关键信息。"
+        system_prompt = _get_multilang_intent_system_prompt(language)
+        user_prompt = _get_multilang_user_prompt(text, language)
         
         resp = requests.post(
             f"{openai_base_url}/chat/completions",
@@ -503,7 +717,7 @@ def _identify_intent(text: str) -> str:
     # 默认：闲聊
     return "SMALLTALK"
 
-async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
+async def _handle_smalltalk_with_llm(query: str, intent: str, language: str = "zh") -> Dict[str, Any]:
     """
     处理闲聊或超出能力范围的问题，使用LLM自动回答
     
@@ -524,18 +738,7 @@ async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
     
     if use_llm and openai_api_key and openai_base_url:
         try:
-            system_prompt = """你是销售与分销(SD)系统的智能助手。你的主要能力包括：
-1. 查询销售订单列表和详情
-2. ATP物料可用性检查
-3. 自动创建交货单
-4. 交货单过账
-5. 创建发票
-6. 复制订单
-7. 创建销售订单
-8. 查询采购订单详情（查看采购订单、采购订单详情等）
-
-当用户的问题不在你的能力范围内时，请友好地说明你能做什么，并给出一些示例。
-用简洁、专业、友好的中文回答。不要编造具体的数据或表格。"""
+            system_prompt = _get_multilang_system_prompt(language)
 
             resp = requests.post(
                 f"{openai_base_url}/chat/completions",
@@ -573,16 +776,7 @@ async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
     
     # 如果LLM失败或未启用，使用默认回答
     if not explanation:
-        explanation = (
-            "我是SD Agent，可以帮助您：\n"
-            "1. 查询销售订单列表和详情（例如：查询销售订单列表、查看订单VB2025000059的详情）\n"
-            "2. ATP物料可用性检查（例如：检查订单VB2025000059的ATP、检查库存）\n"
-            "3. 创建交货单（例如：为订单VB2025000059创建交货单）\n"
-            "4. 交货单过账（例如：为交货单8000000048过账）\n"
-            "5. 创建发票（例如：为交货单8000000048开票）\n"
-            "6. 复制订单（例如：复制订单VB2025000059）\n\n"
-            "请告诉我您需要什么帮助？"
-        )
+        explanation = _get_multilang_default_response(language)
     
     return {
         "success": True,
@@ -606,7 +800,8 @@ async def sd_ai_query(
     mm_service: MMService = Depends(get_mm_service),
     message_service: AgentMessageService = Depends(get_message_service),
     x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
-    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
 ) -> Dict[str, Any]:
     """
     SD模块AI查询接口
@@ -647,10 +842,14 @@ async def sd_ai_query(
         
         logger.info(f"收到SD Agent查询: {query}")
         
+        # 获取当前语言环境
+        language = _get_language_from_header(accept_language)
+        logger.info(f"当前语言环境: {language} (Accept-Language: {accept_language})")
+        
         # 识别意图：优先使用LLM，失败则使用规则匹配
         intent = None
         extracted = {}
-        llm_result = await _identify_intent_with_llm(query)
+        llm_result = await _identify_intent_with_llm(query, language)
         
         if llm_result and llm_result.get("intent"):
             # LLM识别成功
@@ -2982,6 +3181,21 @@ async def sd_ai_query(
                 # 优先使用LLM提取的订单号，否则使用规则提取
                 vbeln = (extracted.get("vbeln") or _extract_order_number(query)) if "ORDER" in intent else None
                 
+                # 对于订单详情和订单编辑页面，如果没有订单号，应该提示用户提供
+                if intent in ["NAVIGATE_ORDER_DETAIL", "NAVIGATE_ORDER_EDIT"] and not vbeln:
+                    prompt_message = _get_multilang_order_number_prompt(language, "sales")
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "text",
+                            "text": prompt_message
+                        },
+                        "message": prompt_message.split("\n")[0]  # 只返回第一行作为简短消息
+                    }
+                
+                navigation_message = _get_multilang_navigation_message(language, route)
+                
                 return {
                     "success": True,
                     "intent": intent,
@@ -2989,23 +3203,30 @@ async def sd_ai_query(
                         "type": "navigate",
                         "route": route,
                         "params": {"vbeln": vbeln} if vbeln else None
-                    }
+                    },
+                    "message": navigation_message
                 }
             else:
                 # 返回页面列表
+                page_list_messages = {
+                    "zh": "以下是可跳转的销售模块页面，点击任意页面即可跳转：",
+                    "en": "The following are the sales module pages you can navigate to. Click any page to navigate:",
+                    "tr": "Aşağıda yönlendirilebileceğiniz satış modülü sayfaları bulunmaktadır. Yönlendirmek için herhangi bir sayfaya tıklayın:"
+                }
+                
                 return {
                     "success": True,
                     "intent": "NAVIGATE_LIST",
                     "data": {
                         "type": "page_list",
                         "pages": sd_pages,
-                        "message": "以下是可跳转的销售模块页面，点击任意页面即可跳转：",
+                        "message": page_list_messages.get(language, page_list_messages["zh"]),
                     }
                 }
         
         else:
             # 闲聊或超出能力范围的问题，使用LLM自动回答
-            return await _handle_smalltalk_with_llm(query, intent or "SMALLTALK")
+            return await _handle_smalltalk_with_llm(query, intent or "SMALLTALK", language)
     
     except HTTPException:
         raise

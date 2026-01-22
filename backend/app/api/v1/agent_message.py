@@ -217,7 +217,7 @@ async def get_unread_count(
         raise HTTPException(status_code=500, detail=f"获取未读消息数量失败: {str(e)}")
 
 @router.get("/agent-message/conversations")
-async def get_conversations_with_unread(
+async def get_conversations(
     receiver_agent: str,
     receiver_user_id: Optional[str] = None,
     mandt: Optional[str] = None,
@@ -238,4 +238,89 @@ async def get_conversations_with_unread(
     except Exception as e:
         logger.error(f"获取对话列表失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取对话列表失败: {str(e)}")
+
+@router.get("/agent-message/conversations-with-unread")
+async def get_conversations_with_unread(
+    receiver_agent: str,
+    receiver_user_id: Optional[str] = None,
+    mandt: Optional[str] = None,
+    message_service: AgentMessageService = Depends(get_message_service)
+) -> Dict[str, Any]:
+    """获取有未读消息的对话列表（FI Agent使用）"""
+    try:
+        conversations = message_service.get_conversations_with_unread(
+            receiver_agent=receiver_agent,
+            receiver_user_id=receiver_user_id,
+            mandt=mandt
+        )
+        return {
+            "code": 200,
+            "msg": "获取对话列表成功",
+            "data": conversations
+        }
+    except Exception as e:
+        logger.error(f"获取对话列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取对话列表失败: {str(e)}")
+
+@router.get("/agent-message/receive-messages")
+async def receive_messages_for_fi(
+    receiver_agent: str,
+    receiver_user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    status: str = "PENDING",
+    mandt: Optional[str] = None,
+    limit: int = 50,
+    message_service: AgentMessageService = Depends(get_message_service)
+) -> Dict[str, Any]:
+    """接收对话消息（FI Agent使用）"""
+    try:
+        messages = message_service.receive_messages(
+            receiver_agent=receiver_agent,
+            receiver_user_id=receiver_user_id,
+            status=status,
+            mandt=mandt,
+            conversation_id=conversation_id,
+            limit=limit
+        )
+        
+        return {
+            "code": 200,
+            "msg": "获取消息成功",
+            "data": messages
+        }
+    except Exception as e:
+        logger.error(f"接收消息失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"接收消息失败: {str(e)}")
+
+@router.post("/agent-message/mark-read/{message_id}")
+async def mark_message_read_by_path(
+    message_id: str,
+    message_service: AgentMessageService = Depends(get_message_service)
+) -> Dict[str, Any]:
+    """标记消息为已读（路径参数方式，FI Agent使用）"""
+    try:
+        message_service.mark_message_read(message_id)
+        return {
+            "code": 200,
+            "msg": "消息已标记为已读"
+        }
+    except Exception as e:
+        logger.error(f"标记消息已读失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"标记消息已读失败: {str(e)}")
+
+@router.post("/agent-message/mark-processed/{message_id}")
+async def mark_message_processed_by_path(
+    message_id: str,
+    message_service: AgentMessageService = Depends(get_message_service)
+) -> Dict[str, Any]:
+    """标记消息为已处理（路径参数方式，FI Agent使用）"""
+    try:
+        message_service.mark_message_processed(message_id)
+        return {
+            "code": 200,
+            "msg": "消息已标记为已处理"
+        }
+    except Exception as e:
+        logger.error(f"标记消息已处理失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"标记消息已处理失败: {str(e)}")
 

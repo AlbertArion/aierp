@@ -987,35 +987,40 @@ class SDService:
             json=invoice_data
         )
     
-    async def get_production_order_detail(self, aufnr: str) -> Dict[str, Any]:
+    async def get_production_order_detail(self, aufnr: str, matnr: str = None) -> Dict[str, Any]:
         """
         获取生产订单详情
         
         Args:
             aufnr: 生产订单号
+            matnr: 物料号（可选，用于精确查询正确的行项目）
         
         Returns:
             生产订单详情（包含resbList等）
         """
+        params = {"aufnr": aufnr}
+        if matnr:
+            params["matnr"] = matnr
         return await self._request(
             method="GET",
             path="/sinocst-module-pp/productOrder/detail",
-            params={"aufnr": aufnr}
+            params=params
         )
     
-    async def check_production_order_material_availability(self, aufnr: str) -> Dict[str, Any]:
+    async def check_production_order_material_availability(self, aufnr: str, matnr: str = None) -> Dict[str, Any]:
         """
         检查生产订单物料可用性（齐套性检查）
         
         Args:
             aufnr: 生产订单号
+            matnr: 物料号（可选，用于精确查询正确的行项目）
         
         Returns:
             齐套检查结果
         """
         # 先获取生产订单详情（包含BOM组件resbList）
         try:
-            detail_result = await self.get_production_order_detail(aufnr)
+            detail_result = await self.get_production_order_detail(aufnr, matnr)
         except Exception as e:
             error_msg = str(e)
             logger.error(f"获取生产订单详情失败: {error_msg}", exc_info=True)
@@ -1094,9 +1099,23 @@ class SDService:
                 "relatnr": aufnr  # 关联订单号（生产订单号）
                 # 不包含mandt字段，mandt将从请求头X-Mandt获取，避免传递错误的mandt值
             }
-            # 只添加有效的mareq_item（必须有物料号和工厂）
-            if mareq_item.get("matnr") and mareq_item.get("werks"):
+            # 只添加有效的mareq_item（必须有物料号、工厂，且计划领料数大于0）
+            if mareq_item.get("matnr") and mareq_item.get("werks") and total_required_qty > 0:
                 mareq_items.append(mareq_item)
+            elif total_required_qty == 0:
+                # 如果计划领料数为0，记录警告但跳过（避免传入无效数据导致后端报错）
+                maktx = resb.get("maktx") or matnr or "未知物料"
+                logger.warning(f"跳过物料 {matnr}（{maktx}）：计划领料数为0（BOM数量={bdmng_per_unit}，订单数量={order_quantity}）")
+        
+        # 如果所有物料的计划领料数都为0，返回友好的错误信息
+        if not mareq_items:
+            return {
+                "code": 400,
+                "success": False,
+                "data": [],
+                "message": f"生产订单 {aufnr} 的所有BOM组件的计划领料数都为0，无法进行齐套性检查。请检查订单数量（gamng）和BOM组件数量（bdmng）是否正确。",
+                "error_type": "ZERO_PLMNG"
+            }
         
         # 调用齐套检查API
         try:
@@ -1289,9 +1308,13 @@ class SDService:
                 "maktx": bom_item.get("ojtxp") or bom_item.get("maktx"),  # 物料描述
                 "relatnr": aufnr  # 关联订单号（内部订单号）
             }
-            # 只添加有效的mareq_item（必须有物料号和工厂）
-            if mareq_item.get("matnr") and mareq_item.get("werks"):
+            # 只添加有效的mareq_item（必须有物料号、工厂，且计划领料数大于0）
+            if mareq_item.get("matnr") and mareq_item.get("werks") and total_required_qty > 0:
                 mareq_items.append(mareq_item)
+            elif total_required_qty == 0:
+                # 如果计划领料数为0，记录警告但跳过（避免传入无效数据导致后端报错）
+                maktx = bom_item.get("ojtxp") or bom_item.get("maktx") or matnr or "未知物料"
+                logger.warning(f"跳过物料 {matnr}（{maktx}）：计划领料数为0（BOM数量={bdmng_per_unit}，订单数量={order_quantity}）")
         
         if not mareq_items:
             logger.warning(f"内部订单 {aufnr} 没有有效的BOM组件数据")

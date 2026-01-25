@@ -1877,13 +1877,14 @@ async def pp_ai_query(
                                     bdmng = bom_menge * zmeng
                                     
                                     # 获取基础字段
-                                    matnr = bom_item.get("idnrk", "").strip()  # BOM组件物料号
+                                    # 注意：使用 component_matnr 而不是 matnr，避免覆盖原始成品物料号
+                                    component_matnr = bom_item.get("idnrk", "").strip()  # BOM组件物料号
                                     bom_werks = bom_item.get("pswrk") or werks  # 工厂
                                     bom_lgort = bom_item.get("lgort", "").strip()  # 库存地点（如果BOM中有）
                                     bom_vornr = (bom_item.get("vornr", "") or bom_item.get("sortf", "")).strip()  # 工序号
                                     
                                     resb_item = {
-                                        "matnr": matnr,
+                                        "matnr": component_matnr,
                                         "maktx": bom_item.get("idnrkMaxtx", "") or bom_item.get("idnrkMaktx", ""),  # 物料描述
                                         "bdmng": bdmng,  # 需求数量（BOM数量 * 订单数量）
                                         "meins": bom_item.get("meins", "PC"),  # 单位
@@ -1902,7 +1903,7 @@ async def pp_ai_query(
                                         try:
                                             marc_query_params = {
                                                 "mandt": mandt,
-                                                "matnr": resb_item["matnr"],
+                                                "matnr": component_matnr,
                                                 "werks": resb_item["werks"]
                                             }
                                             marc_result = await sd_service._request(
@@ -1915,14 +1916,14 @@ async def pp_ai_query(
                                                 lgort = marc_data.get("lgpro", "")
                                                 if lgort:
                                                     resb_item["lgort"] = lgort
-                                                    logger.info(f"从物料主数据获取库存地点: {resb_item['matnr']} -> {lgort}")
+                                                    logger.info(f"从物料主数据获取库存地点: {component_matnr} -> {lgort}")
                                         except Exception as e:
-                                            logger.warning(f"查询物料主数据失败: {resb_item['matnr']}, 错误: {e}")
+                                            logger.warning(f"查询物料主数据失败: {component_matnr}, 错误: {e}")
                                     
                                     # 如果还是没有库存地点，使用默认值L001
                                     if not resb_item.get("lgort"):
                                         resb_item["lgort"] = "L001"
-                                        logger.info(f"使用默认库存地点L001: {resb_item['matnr']}")
+                                        logger.info(f"使用默认库存地点L001: {component_matnr}")
                                     
                                     # 如果没有工序号，使用默认值
                                     if not resb_item.get("vornr"):
@@ -1940,7 +1941,7 @@ async def pp_ai_query(
                                         existing_bdmng = existing_resb.get("bdmng", 0) or 0
                                         current_bdmng = resb_item.get("bdmng", 0) or 0
                                         existing_resb["bdmng"] = existing_bdmng + current_bdmng
-                                        logger.warning(f"检测到重复的BOM组件，已合并数量。物料号: {resb_item['matnr']}, 工厂: {resb_item['werks']}, 库存地点: {resb_item['lgort']}, 工序号: {resb_item['vornr']}, 原数量: {existing_bdmng}, 新增数量: {current_bdmng}, 合并后数量: {existing_resb['bdmng']}")
+                                        logger.warning(f"检测到重复的BOM组件，已合并数量。物料号: {component_matnr}, 工厂: {resb_item['werks']}, 库存地点: {resb_item['lgort']}, 工序号: {resb_item['vornr']}, 原数量: {existing_bdmng}, 新增数量: {current_bdmng}, 合并后数量: {existing_resb['bdmng']}")
                                 
                                 # 将去重后的组件添加到resb_list
                                 resb_list.extend(unique_resb_map.values())
@@ -2194,6 +2195,7 @@ async def pp_ai_query(
             # 齐套性检查（BOM检查）
             aufnr = extracted.get("aufnr") or context.get("aufnr") if 'context' in locals() else None
             internal_aufnr = extracted.get("internal_aufnr") or context.get("internal_aufnr") if 'context' in locals() else None
+            matnr = extracted.get("matnr") or context.get("matnr") if 'context' in locals() else None
             
             # 如果LLM没有提取到订单号，使用规则匹配作为fallback
             if not aufnr:
@@ -2203,6 +2205,13 @@ async def pp_ai_query(
                 internal_aufnr_match = re.search(r'808\d{9}', query)
                 if internal_aufnr_match:
                     internal_aufnr = internal_aufnr_match.group(0)
+            
+            # 如果LLM没有提取到物料号，使用规则匹配作为fallback
+            # 物料号格式：M开头后面跟数字，或者纯数字（如M0006, 10001234等）
+            if not matnr:
+                matnr_match = re.search(r'物料\s*([A-Za-z]?\d+[-_]?[A-Za-z0-9]*)', query)
+                if matnr_match:
+                    matnr = matnr_match.group(1)
             
             if not aufnr and not internal_aufnr:
                 return {
@@ -2219,8 +2228,8 @@ async def pp_ai_query(
                     if not cleaned_aufnr:
                         cleaned_aufnr = aufnr
                     
-                    # 调用SD服务的齐套性检查方法
-                    check_result = await sd_service.check_production_order_material_availability(cleaned_aufnr)
+                    # 调用SD服务的齐套性检查方法（传入物料号以精确查询正确的行项目）
+                    check_result = await sd_service.check_production_order_material_availability(cleaned_aufnr, matnr)
                     
                     if check_result.get("code") == 200:
                         # 齐套检查返回的数据是一个列表，如果列表为空，说明所有物料都充足

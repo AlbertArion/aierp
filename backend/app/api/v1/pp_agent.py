@@ -28,7 +28,8 @@ def get_pp_service(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     blade_auth: Optional[str] = Header(None, alias="Blade-Auth"),
     x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
-    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
+    accept_language: Optional[str] = Header(None, alias="Accept-Language")
 ) -> PPService:
     """创建PPService实例，并传递认证token和租户信息"""
     service = PPService()
@@ -71,6 +72,11 @@ def get_pp_service(
     if x_tenant_id and x_tenant_id != "null" and x_tenant_id.strip() != "":
         service.set_tenant_id(x_tenant_id.strip())
         logger.info(f"设置tenantId: {x_tenant_id.strip()}")
+    
+    # 设置语言环境（Accept-Language）
+    if accept_language and accept_language.strip():
+        service.set_accept_language(accept_language.strip())
+        logger.info(f"设置Accept-Language: {accept_language.strip()}")
     
     return service
 

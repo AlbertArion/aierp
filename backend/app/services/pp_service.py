@@ -20,6 +20,7 @@ class PPService:
         self.token = None  # 用户token，从请求中获取
         self.mandt = None  # 集团代码，从请求中获取
         self.tenant_id = None  # 租户ID，从请求中获取
+        self.accept_language = None  # 语言环境，从请求中获取
         # 判断是否通过网关访问
         self.is_gateway = "9015" in self.base_url or "gateway" in self.base_url.lower()
     
@@ -34,6 +35,10 @@ class PPService:
     def set_tenant_id(self, tenant_id: str):
         """设置租户ID"""
         self.tenant_id = tenant_id
+    
+    def set_accept_language(self, accept_language: str):
+        """设置语言环境"""
+        self.accept_language = accept_language
     
     def _build_path(self, path: str) -> str:
         """
@@ -139,6 +144,11 @@ class PPService:
             # 如果没有tenantId但有mandt，使用mandt作为tenantId（通常它们是同一个值）
             request_headers["X-Tenant-Id"] = self.mandt
             logger.info(f"已添加X-Tenant-Id头到请求（使用mandt值）: {self.mandt}")
+        
+        # 添加语言环境请求头（Accept-Language）
+        if self.accept_language:
+            request_headers["Accept-Language"] = self.accept_language
+            logger.info(f"已添加Accept-Language头到请求: {self.accept_language}")
         
         # 重试逻辑
         last_error = None

@@ -1217,6 +1217,7 @@ class SDService:
             raise Exception(f"获取内部订单BOM列表失败：{error_msg}")
         
         bom_list = bom_result.get("data") or []
+        logger.info(f"内部订单 {aufnr} 从bom-list接口获取到 {len(bom_list)} 个BOM组件")
         # 如果BOM列表为空，尝试自动执行BOM展开
         if not bom_list:
             logger.info(f"内部订单 {aufnr} BOM列表为空，尝试自动执行BOM展开")
@@ -1242,7 +1243,7 @@ class SDService:
                 
                 # 如果BOM展开后仍然为空，检查是否是物料没有配置BOM
                 if not bom_list:
-                    logger.warning(f"内部订单 {aufnr} BOM展开后仍然没有组件数据")
+                    logger.warning(f"内部订单 {aufnr} BOM展开后仍然没有组件数据。BOM树节点数: {len(bom_tree) if bom_tree else 0}")
                     # 检查物料是否配置了BOM
                     if not matnr:
                         return {

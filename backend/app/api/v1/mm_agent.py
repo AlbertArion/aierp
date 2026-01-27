@@ -435,6 +435,7 @@ async def mm_ai_query(
             context = payload.get("context", {})
             items = context.get("items", [])
             aufnr = context.get("aufnr", "")
+            internal_aufnr = context.get("internal_aufnr", "")
             source_agent = context.get("source_agent", "pp-agent")
             conversation_id = payload.get("conversation_id")
             
@@ -456,15 +457,18 @@ async def mm_ai_query(
                 meins = item.get("meins", "PC")
                 
                 if matnr_name:
-                    material_list.append(f"物料{matnr_name}({matnr})需要采购{purchase_qty} {meins}")
+                    material_list.append(f"物料 {matnr_name}({matnr}) 需要采购 {purchase_qty} {meins}")
                 else:
-                    material_list.append(f"物料{matnr}需要采购{purchase_qty} {meins}")
+                    material_list.append(f"物料 {matnr} 需要采购 {purchase_qty} {meins}")
             
             material_desc = "，".join(material_list)
             
             # 返回消息，提示用户需要在前端创建采购订单
+            # 根据订单类型（生产订单或内部订单）生成不同的消息
             message = f"已收到创建采购订单请求。"
-            if aufnr:
+            if internal_aufnr:
+                message += f"内部订单号：{internal_aufnr}。"
+            elif aufnr:
                 message += f"生产订单号：{aufnr}。"
             message += f"需要采购的物料：{material_desc}。"
             message += "请前往MM Agent前端页面创建采购订单，或使用'创建采购订单'功能。"
@@ -489,6 +493,7 @@ async def mm_ai_query(
                             "type": "create_purchase_order_request",
                             "items": items,
                             "aufnr": aufnr,
+                            "internal_aufnr": internal_aufnr,
                             "source_agent": source_agent,
                             "material_desc": material_desc,
                             "message": message
@@ -514,6 +519,7 @@ async def mm_ai_query(
                     "type": "create_purchase_order_request",
                     "items": items,
                     "aufnr": aufnr,
+                    "internal_aufnr": internal_aufnr,
                     "source_agent": source_agent,
                     "material_desc": material_desc
                 }

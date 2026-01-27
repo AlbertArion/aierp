@@ -4,7 +4,7 @@
 PP Agent AI查询接口
 支持自然语言查询生产订单、报工情况、月结异常检测等功能
 """
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional, AsyncGenerator
 import re
@@ -17,6 +17,7 @@ import asyncio
 from app.services.pp_service import PPService
 from app.services.agent_message_service import AgentMessageService
 from app.services.sd_service import SDService
+from app.services.mm_service import MMService
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,50 @@ def get_pp_service(
 def get_message_service() -> AgentMessageService:
     """创建AgentMessageService实例"""
     return AgentMessageService()
+
+# 依赖注入：创建MMService实例，并传递token和租户信息
+def get_mm_service(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    blade_auth: Optional[str] = Header(None, alias="Blade-Auth"),
+    x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
+) -> MMService:
+    """创建MMService实例，并传递认证token和租户信息"""
+    service = MMService()
+    
+    # 优先从Authorization头获取token
+    token = None
+    if authorization:
+        if authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", 1)[1].strip()
+        else:
+            token = authorization.strip()
+    
+    # 如果Authorization头没有token，尝试从Blade-Auth头获取
+    if not token and blade_auth:
+        if blade_auth.lower().startswith("bearer "):
+            token = blade_auth.split(" ", 1)[1].strip()
+        elif blade_auth.lower().startswith("crypto "):
+            token = blade_auth.strip()
+        else:
+            token = blade_auth.strip()
+    
+    # 设置token到service
+    if token:
+        service.set_token(token)
+    
+    # 设置租户信息（mandt和tenantId）到service
+    mandt = x_mandt
+    if not mandt or mandt == "null" or mandt.strip() == "":
+        mandt = x_tenant_id
+    
+    if mandt and mandt != "null" and mandt.strip() != "":
+        service.set_mandt(mandt.strip())
+    
+    if x_tenant_id and x_tenant_id != "null" and x_tenant_id.strip() != "":
+        service.set_tenant_id(x_tenant_id.strip())
+    
+    return service
 
 # 依赖注入：创建SDService实例，并传递token和租户信息
 def get_sd_service(
@@ -254,7 +299,9 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
 9. CREATE_PRODUCTION_ORDER - 创建生产订单（为销售订单创建生产订单、创建生产订单等）
 10. CREATE_INTERNAL_ORDER - 创建内部订单（为销售订单创建内部订单、创建内部订单等）
 11. CHECK_PRODUCTION_ORDER_MATERIAL - 检查生产订单物料可用性（齐套性检查）（检查生产订单的齐套性、物料可用性、BOM检查、齐套性检查等，注意：这是针对生产订单的物料可用性检查）
-12. SMALLTALK - 闲聊或询问如何使用
+12. CHECK_MATERIAL_AVAILABILITY - 检查内部订单物料可用性（齐套性检查）（检查内部订单的齐套性、物料可用性、BOM检查等，注意：这是针对内部订单的物料可用性检查）
+13. QUERY_MATERIAL_DOCUMENT - 查看物料凭证（用户明确提到"查看物料凭证"、"物料凭证XXX"、"查看物料凭证XXX"等，注意：物料凭证号通常是10位数字，如0000000084）
+14. SMALLTALK - 闲聊或询问如何使用
 
 请以JSON格式返回结果，格式如下：
 {
@@ -262,7 +309,9 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
     "confidence": 0.0-1.0的置信度,
     "extracted": {
         "aufnr": "生产订单号（如果提到，通常是10-12位数字）",
+        "internal_aufnr": "内部订单号（如果提到，通常是10-12位数字，如0000001013）",
         "vbeln": "销售订单号（如果提到，通常是VB开头+10-12位数字，或纯10-12位数字）",
+        "mblnr": "物料凭证号（如果提到，通常是10位数字，如0000000084）",
         "matnr": "物料号（如果提到）",
         "vornr": "工序号（如果提到）",
         "werks": "工厂（如果提到）"
@@ -281,7 +330,8 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
   * "创建内部订单"和"创建生产订单"是完全不同的意图，必须严格区分
   * 如果用户明确提到"内部订单"，必须识别为CREATE_INTERNAL_ORDER，不能识别为CREATE_PRODUCTION_ORDER
   * 如果用户明确提到"生产订单"，必须识别为CREATE_PRODUCTION_ORDER，不能识别为CREATE_INTERNAL_ORDER
-- **如果用户提到"检查生产订单XXX的齐套性"、"齐套性检查"、"物料可用性检查"、"BOM检查"、"检查XXX的物料"、"检查XXX的齐套性"等，应该是CHECK_PRODUCTION_ORDER_MATERIAL，并提取生产订单号到aufnr字段**
+- **如果用户提到"检查生产订单XXX的齐套性"、"生产订单XXX的齐套性检查"、"物料可用性检查"、"BOM检查"等（明确提到"生产订单"），应该是CHECK_PRODUCTION_ORDER_MATERIAL，并提取生产订单号到aufnr字段**
+- **如果用户提到"检查内部订单XXX的齐套性"、"内部订单XXX的齐套性检查"、"检查内部订单XXX的物料"等（明确提到"内部订单"），应该是CHECK_MATERIAL_AVAILABILITY，并提取内部订单号到internal_aufnr字段（如果提到）**
 - 如果用户提到"查看订单XXX"、"订单XXX的详情"、"查询订单XXX"等（且没有提到齐套性、物料可用性、BOM等），应该是QUERY_ORDER_DETAIL
 - 如果用户提到"查询XXX订单的报工情况"、"查询XXX物料，XXX工序的报工情况"，应该是QUERY_WORK_REPORT
 - 如果只提到"订单列表"、"所有订单"等，应该是QUERY_ORDER_LIST
@@ -291,7 +341,9 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
   * 如果同时提到"生产订单"和"齐套性"或"物料可用性"，必须识别为 CHECK_PRODUCTION_ORDER_MATERIAL，而不是 QUERY_ORDER_DETAIL
 - **创建生产订单的意图优先级高于查询订单详情，如果同时提到"创建"和"生产订单"，应该识别为CREATE_PRODUCTION_ORDER**
 - **齐套性检查的意图优先级高于查询订单详情，如果同时提到"齐套性"或"物料可用性"和"生产订单"，应该识别为CHECK_PRODUCTION_ORDER_MATERIAL**
-- 优先提取订单号、物料号、工序号、销售订单号，即使表达不完整也要识别"""
+- **重要：如果用户明确提到"查看物料凭证"、"物料凭证XXX"、"查看物料凭证XXX"等，必须识别为QUERY_MATERIAL_DOCUMENT，而不是QUERY_ORDER_DETAIL。物料凭证号（mblnr）通常是10位数字（如0000000084），不要将其误识别为生产订单号（aufnr）**
+- **"查看物料凭证XXX"的意图优先级高于查询生产订单详情，如果用户明确提到"物料凭证"，必须识别为QUERY_MATERIAL_DOCUMENT**
+- 优先提取订单号、物料号、工序号、销售订单号、物料凭证号，即使表达不完整也要识别"""
 
         user_prompt = f"用户查询：{text}\n\n请识别意图并提取关键信息。"
         
@@ -404,7 +456,9 @@ def _identify_intent(text: str) -> str:
     
     # 齐套性检查意图 - 优先级高，需要在查询之前检查
     if any(keyword in text_lower for keyword in ["齐套性", "齐套性检查", "物料可用性", "物料可用性检查", "bom检查", "检查物料", "检查齐套性"]):
-        if "生产订单" in text_lower or _extract_order_number(text):
+        if "内部订单" in text_lower:
+            return "CHECK_MATERIAL_AVAILABILITY"  # 内部订单齐套性检查
+        elif "生产订单" in text_lower or _extract_order_number(text):
             return "CHECK_PRODUCTION_ORDER_MATERIAL"
     
     # 创建订单意图 - 优先级高，需要在查询之前检查
@@ -896,6 +950,10 @@ async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str
 4. 月结异常检测
 5. 订单状态监控
 6. 根据需求生成ABAP代码
+7. 检查生产订单的齐套性（物料可用性检查）
+8. 检查内部订单的齐套性（物料可用性检查）
+9. 创建生产订单
+10. 创建内部订单
 
 当用户的问题不在你的能力范围内时，请友好地说明你能做什么，并给出一些示例。
 用简洁、专业、友好的中文回答。不要编造具体的数据或表格。"""
@@ -942,7 +1000,11 @@ async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str
             "2. 查询报工一览表（例如：查询报工一览表）\n"
             "3. 查询未报工情况（例如：查询未报工情况）\n"
             "4. 月结异常检测（例如：月结异常检测）\n"
-            "5. 订单状态监控（例如：查询订单状态）\n\n"
+            "5. 订单状态监控（例如：查询订单状态）\n"
+            "6. 检查生产订单的齐套性（例如：检查生产订单8900000009的齐套性）\n"
+            "7. 检查内部订单的齐套性（例如：检查内部订单0000001013的齐套性）\n"
+            "8. 创建生产订单（例如：为销售订单VB1000000107创建生产订单）\n"
+            "9. 创建内部订单（例如：为销售订单VB1000000107创建内部订单）\n\n"
             "请告诉我您需要什么帮助？"
         )
     
@@ -959,8 +1021,10 @@ async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str
 @router.post("/pp-agent/ai-query")
 async def pp_ai_query(
     payload: Dict[str, Any],
+    request: Request,
     pp_service: PPService = Depends(get_pp_service),
     sd_service: SDService = Depends(get_sd_service),
+    mm_service: MMService = Depends(get_mm_service),
     message_service: AgentMessageService = Depends(get_message_service),
     x_mandt: Optional[str] = Header(None, alias="X-Mandt"),
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id")
@@ -1075,6 +1139,124 @@ async def pp_ai_query(
                 },
                 "message": f"查询生产订单{aufnr}详情成功"
             }
+        
+        elif intent == "QUERY_MATERIAL_DOCUMENT":
+            # 查看物料凭证 - 直接查询物料凭证详情并返回卡片数据
+            mblnr = extracted.get("mblnr") or ""
+            if not mblnr:
+                # 尝试从查询文本中提取物料凭证号
+                mblnr_match = re.search(r'([0-9]{10})', query)
+                if mblnr_match:
+                    mblnr = mblnr_match.group(1)
+            
+            if mblnr:
+                try:
+                    # 获取当前年度
+                    current_year = datetime.now().year
+                    mjahr = str(current_year)
+                    
+                    # 查询物料凭证详情（使用依赖注入的mm_service）
+                    mkpf_detail = await mm_service.get_material_document_detail(mblnr, mjahr)
+                    
+                    if mkpf_detail and mkpf_detail.get("code") == 200 and mkpf_detail.get("data"):
+                        detail_data = mkpf_detail.get("data", {})
+                        mseg_list = detail_data.get("msegList", [])
+                        
+                        if mseg_list and len(mseg_list) > 0:
+                            # 获取第一个行项目
+                            first_item = mseg_list[0]
+                            aufnr = first_item.get("aufnr") or ""
+                            
+                            # 判断是内部订单还是生产订单（内部订单号通常以8开头，生产订单号通常以1开头）
+                            is_internal_order = aufnr.startswith("8") if aufnr else False
+                            
+                            # 提取物料信息
+                            matnr = first_item.get("matnr") or ""
+                            maktx = first_item.get("maktx") or ""
+                            menge = first_item.get("menge") or 0
+                            meins = first_item.get("meins") or "PC"
+                            
+                            if is_internal_order and aufnr:
+                                # 内部订单收货成功卡片
+                                # 尝试从物料凭证详情中获取销售订单号
+                                vbeln = first_item.get("kdauf") or first_item.get("vbeln") or ""
+                                
+                                return {
+                                    "success": True,
+                                    "intent": intent,
+                                    "data": {
+                                        "type": "internal_order_goods_receipt_completed",
+                                        "internal_aufnr": aufnr,
+                                        "mblnr": mblnr,
+                                        "matnr": matnr,
+                                        "maktx": maktx,
+                                        "menge": menge,
+                                        "meins": meins,
+                                        "vbeln": vbeln,  # 销售订单号，用于创建交货
+                                        "goodsReceived": True
+                                    },
+                                    "message": f"内部订单 {aufnr} 收货成功"
+                                }
+                            else:
+                                # 生产订单收货成功卡片（如果需要支持的话）
+                                return {
+                                    "success": True,
+                                    "intent": intent,
+                                    "data": {
+                                        "type": "production_receipt_completed_message",
+                                        "aufnr": aufnr,
+                                        "mblnr": mblnr,
+                                        "matnr": matnr,
+                                        "maktx": maktx,
+                                        "menge": menge,
+                                        "meins": meins
+                                    },
+                                    "message": f"生产订单 {aufnr} 收货成功"
+                                }
+                        else:
+                            # 物料凭证没有行项目数据
+                            return {
+                                "success": False,
+                                "intent": intent,
+                                "data": {
+                                    "type": "text",
+                                    "text": f"物料凭证 {mblnr} 没有找到相关数据"
+                                },
+                                "message": f"物料凭证 {mblnr} 没有找到相关数据"
+                            }
+                    else:
+                        # 查询失败，返回错误信息
+                        error_msg = mkpf_detail.get("msg", "查询物料凭证详情失败") if mkpf_detail else "查询物料凭证详情失败"
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "data": {
+                                "type": "text",
+                                "text": error_msg
+                            },
+                            "message": error_msg
+                        }
+                except Exception as e:
+                    logger.error(f"查询物料凭证详情失败: {str(e)}", exc_info=True)
+                    return {
+                        "success": False,
+                        "intent": intent,
+                        "data": {
+                            "type": "text",
+                            "text": f"查询物料凭证详情失败：{str(e)}"
+                        },
+                        "message": f"查询物料凭证详情失败：{str(e)}"
+                    }
+            else:
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "data": {
+                        "type": "text",
+                        "text": "请提供物料凭证号，例如：查看物料凭证 0000000084"
+                    },
+                    "message": "请提供物料凭证号"
+                }
         
         elif intent == "QUERY_UNREPORTED_WORK":
             # 检查是否是统计查询（包含"统计"、"有多少个"、"数量"等关键词）
@@ -2203,14 +2385,25 @@ async def pp_ai_query(
             internal_aufnr = extracted.get("internal_aufnr") or context.get("internal_aufnr") if 'context' in locals() else None
             matnr = extracted.get("matnr") or context.get("matnr") if 'context' in locals() else None
             
-            # 如果LLM没有提取到订单号，使用规则匹配作为fallback
-            if not aufnr:
-                aufnr = _extract_order_number(query)
-            if not internal_aufnr:
-                # 内部订单号通常是12位数字，以808开头
-                internal_aufnr_match = re.search(r'808\d{9}', query)
+            # 如果查询中包含"内部订单"，优先提取为内部订单号
+            if "内部订单" in query:
+                # 先尝试匹配明确的内部订单号格式
+                internal_aufnr_match = re.search(r'(?:内部订单|内部订单号)[\s\-:：]?([0-9]{10,12})', query)
                 if internal_aufnr_match:
-                    internal_aufnr = internal_aufnr_match.group(0)
+                    internal_aufnr = internal_aufnr_match.group(1)
+                else:
+                    # 如果没有明确标识，尝试匹配10-12位数字（可能是内部订单号）
+                    # 但需要排除生产订单号（通常以89开头）
+                    number_match = re.search(r'([0-9]{10,12})', query)
+                    if number_match:
+                        potential_number = number_match.group(1)
+                        # 如果数字不是以89开头（生产订单通常以89开头），则认为是内部订单号
+                        if not potential_number.startswith("89"):
+                            internal_aufnr = potential_number
+            else:
+                # 如果查询中不包含"内部订单"，才提取为生产订单号
+                if not aufnr:
+                    aufnr = _extract_order_number(query)
             
             # 如果LLM没有提取到物料号，使用规则匹配作为fallback
             # 物料号格式：M开头后面跟数字，或者纯数字（如M0006, 10001234等）
@@ -2470,10 +2663,21 @@ async def pp_ai_query(
                         else:
                             # 有物料不足
                             not_enough_items = [item for item in all_materials_items if not item.get("is_available", False)]
-                            material_names = [item.get("maktx", item.get("matnr", "")) for item in not_enough_items]
+                            
+                            # 对物料进行去重（按物料号、工厂、库存地点），避免重复显示
+                            unique_materials_map = {}
+                            for item in not_enough_items:
+                                key = f"{item.get('matnr', '')}-{item.get('werks', '')}-{item.get('lgort', '')}"
+                                if key not in unique_materials_map:
+                                    unique_materials_map[key] = item
+                            
+                            unique_not_enough_items = list(unique_materials_map.values())
+                            
+                            # 提取物料名称（优先使用matnr_name，其次使用maktx，最后使用matnr）
+                            material_names = [item.get("matnr_name") or item.get("maktx") or item.get("matnr", "") for item in unique_not_enough_items]
                             material_names_str = "、".join(material_names[:5])  # 最多显示5个物料
-                            if len(not_enough_items) > 5:
-                                material_names_str += f"等{len(not_enough_items)}个物料"
+                            if len(unique_not_enough_items) > 5:
+                                material_names_str += f"等{len(unique_not_enough_items)}个物料"
                             
                             return {
                                 "success": True,
@@ -2496,12 +2700,232 @@ async def pp_ai_query(
                             "intent": intent,
                             "message": error_msg
                         }
+                elif internal_aufnr:
+                    # 内部订单的齐套性检查
+                    try:
+                        # 调用SD服务的内部订单齐套性检查方法
+                        check_result = await sd_service.check_internal_order_material_availability(internal_aufnr)
+                        
+                        # 检查结果格式：如果是标准响应格式，使用code字段
+                        result_code = check_result.get("code")
+                        if result_code is None:
+                            # 如果没有code字段，尝试判断是否有success字段
+                            if check_result.get("success") is not False:
+                                result_code = 200
+                            else:
+                                result_code = 500
+                        
+                        # 处理服务不可用的情况（503）
+                        if result_code == 503:
+                            error_type = check_result.get("error_type")
+                            if error_type == "SERVICE_UNAVAILABLE":
+                                order_info = check_result.get("order_info", {})
+                                bom_list = order_info.get("bom_list", [])
+                                bom_count = order_info.get("bom_count", 0)
+                                
+                                return {
+                                    "success": False,
+                                    "intent": intent,
+                                    "data": {
+                                        "type": "internal_order_material_check_failed",
+                                        "message": f"内部订单 {internal_aufnr} 的齐套性检查服务暂时不可用。内部订单有 {bom_count} 个BOM组件。请确保物料需求管理服务（sinocst-module-me）已启动并运行在端口9999。",
+                                        "internal_aufnr": internal_aufnr,
+                                        "error_type": "SERVICE_UNAVAILABLE"
+                                    }
+                                }
+                        
+                        # 处理没有BOM数据的情况（400）
+                        if result_code == 400:
+                            error_type = check_result.get("error_type")
+                            if error_type in ["NO_BOM_DATA", "NO_VALID_BOM_DATA", "NO_MATERIAL"]:
+                                return {
+                                    "success": False,
+                                    "intent": intent,
+                                    "data": {
+                                        "type": "internal_order_material_check_failed",
+                                        "message": check_result.get("message", f"内部订单 {internal_aufnr} 没有BOM组件数据，无法进行齐套性检查。请先执行BOM展开。"),
+                                        "internal_aufnr": internal_aufnr,
+                                        "error_type": error_type
+                                    }
+                                }
+                        
+                        # 处理成功的情况（200）
+                        if result_code == 200:
+                            # 获取检查结果数据
+                            check_data = check_result.get("data", [])
+                            order_info = check_result.get("order_info", {})
+                            bom_list = order_info.get("bom_list", [])
+                            order_quantity = order_info.get("order_quantity", 1)
+                            
+                            # 处理检查结果，构建物料项列表
+                            all_materials_items = []
+                            bom_map = {}
+                            for bom_item in bom_list:
+                                matnr = bom_item.get("idnrk") or bom_item.get("matnr")
+                                if matnr:
+                                    bom_map[matnr] = bom_item
+                            
+                            # 如果check_data为空，从BOM列表构建物料明细（所有物料都充足的情况）
+                            if not check_data:
+                                for bom_item in bom_list:
+                                    matnr = bom_item.get("idnrk") or bom_item.get("matnr")
+                                    if not matnr:
+                                        continue
+                                    
+                                    maktx = bom_item.get("ojtxp") or bom_item.get("maktx") or ""
+                                    werks = bom_item.get("werks") or ""
+                                    lgort = bom_item.get("lgort") or "L001"
+                                    meins = bom_item.get("meins") or bom_item.get("erfme") or ""
+                                    # BOM中的menge是单位数量，需要乘以订单数量得到总需求数量
+                                    menge_per_unit = bom_item.get("menge") or bom_item.get("bdmng") or 0
+                                    try:
+                                        menge_per_unit = float(menge_per_unit) if menge_per_unit else 0
+                                    except (ValueError, TypeError):
+                                        menge_per_unit = 0
+                                    
+                                    # 计算总需求数量 = BOM中的数量 × 订单数量
+                                    try:
+                                        bdmng = menge_per_unit * float(order_quantity) if order_quantity > 0 else menge_per_unit
+                                    except (ValueError, TypeError):
+                                        bdmng = menge_per_unit
+                                    
+                                    material_item = {
+                                        "matnr": matnr,
+                                        "matnr_name": maktx,
+                                        "maktx": maktx,
+                                        "werks": werks,
+                                        "lgort": lgort,
+                                        "meins": meins,
+                                        "need_qty": bdmng,
+                                        "labst": 0,
+                                        "speme": 0,
+                                        "insme": 0,
+                                        "actual_available_qty": bdmng,
+                                        "is_available": True,
+                                        "relatnr": internal_aufnr,
+                                        "message": f"库存充足：需要 {bdmng} {meins}"
+                                    }
+                                    all_materials_items.append(material_item)
+                            else:
+                                # 有检查结果，处理检查数据
+                                for check_item in check_data:
+                                    matnr = check_item.get("matnr")
+                                    bom_item = bom_map.get(matnr, {})
+                                    
+                                    maktx = bom_item.get("ojtxp") or bom_item.get("maktx") or check_item.get("maktx", "")
+                                    werks = check_item.get("werks") or bom_item.get("werks", "")
+                                    lgort = check_item.get("lgort") or bom_item.get("lgort", "L001")
+                                    meins = bom_item.get("meins") or bom_item.get("erfme") or check_item.get("erfme", "")
+                                    # 优先使用check_item中的bdmng（已经乘以订单数量），如果没有则从bom_item计算
+                                    bdmng = check_item.get("bdmng") or check_item.get("plmng", 0)
+                                    if not bdmng or bdmng == 0:
+                                        # 如果check_item中没有需求数量，从bom_item计算
+                                        menge_per_unit = bom_item.get("menge") or bom_item.get("bdmng") or 0
+                                        try:
+                                            menge_per_unit = float(menge_per_unit) if menge_per_unit else 0
+                                            bdmng = menge_per_unit * float(order_quantity) if order_quantity > 0 else menge_per_unit
+                                        except (ValueError, TypeError):
+                                            bdmng = menge_per_unit
+                                    labst = check_item.get("labst", 0)
+                                    speme = check_item.get("speme", 0)
+                                    insme = check_item.get("insme", 0)
+                                    
+                                    # 计算实际可用库存
+                                    actual_available_qty = max(0, float(labst) - float(speme) - float(insme))
+                                    
+                                    # 判断物料是否充足
+                                    is_available = actual_available_qty >= float(bdmng)
+                                    if is_available:
+                                        message = f"库存充足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                                    else:
+                                        message = f"库存不足：需要 {bdmng} {meins}，实际可用 {actual_available_qty} {meins}"
+                                    
+                                    material_item = {
+                                        "matnr": matnr,
+                                        "matnr_name": maktx,
+                                        "maktx": maktx,
+                                        "werks": werks,
+                                        "lgort": lgort,
+                                        "meins": meins,
+                                        "need_qty": bdmng,
+                                        "labst": labst,
+                                        "speme": speme,
+                                        "insme": insme,
+                                        "actual_available_qty": actual_available_qty,
+                                        "is_available": is_available,
+                                        "relatnr": internal_aufnr,
+                                        "message": message
+                                    }
+                                    all_materials_items.append(material_item)
+                            
+                            # 检查是否所有物料都充足
+                            all_available = all(item.get("is_available", False) for item in all_materials_items)
+                            
+                            if all_available:
+                                return {
+                                    "success": True,
+                                    "intent": intent,
+                                    "data": {
+                                        "type": "internal_order_material_check",
+                                        "message": f"内部订单 {internal_aufnr} 的齐套性检查完成，所有物料库存充足，可以进行投料。",
+                                        "internal_aufnr": internal_aufnr,
+                                        "items": all_materials_items
+                                    }
+                                }
+                            else:
+                                # 有物料不足，返回失败结果
+                                not_enough_items = [item for item in all_materials_items if not item.get("is_available", False)]
+                                
+                                # 对物料进行去重（按物料号、工厂、库存地点），避免重复显示
+                                unique_materials_map = {}
+                                for item in not_enough_items:
+                                    key = f"{item.get('matnr', '')}-{item.get('werks', '')}-{item.get('lgort', '')}"
+                                    if key not in unique_materials_map:
+                                        unique_materials_map[key] = item
+                                
+                                unique_not_enough_items = list(unique_materials_map.values())
+                                
+                                # 提取物料名称（优先使用matnr_name，其次使用maktx，最后使用matnr）
+                                material_names = [item.get("matnr_name") or item.get("maktx") or item.get("matnr", "") for item in unique_not_enough_items]
+                                material_names_str = "、".join(material_names[:5])
+                                if len(unique_not_enough_items) > 5:
+                                    material_names_str += f"等{len(unique_not_enough_items)}个物料"
+                                
+                                return {
+                                    "success": True,
+                                    "intent": intent,
+                                    "data": {
+                                        "type": "internal_order_material_check_failed",
+                                        "message": f"内部订单 {internal_aufnr} 的齐套性检查未通过，物料{material_names_str}库存不足。",
+                                        "internal_aufnr": internal_aufnr,
+                                        "items": all_materials_items
+                                    }
+                                }
+                        else:
+                            # 其他错误情况
+                            error_msg = check_result.get("msg") or check_result.get("message") or "齐套性检查失败"
+                            return {
+                                "success": False,
+                                "intent": intent,
+                                "data": {
+                                    "type": "internal_order_material_check_failed",
+                                    "message": error_msg,
+                                    "internal_aufnr": internal_aufnr
+                                }
+                            }
+                    except Exception as e:
+                        logger.error(f"内部订单齐套性检查失败: {str(e)}", exc_info=True)
+                        return {
+                            "success": False,
+                            "intent": intent,
+                            "message": f"内部订单齐套性检查失败：{str(e)}"
+                        }
                 else:
-                    # 内部订单的齐套性检查（暂未实现）
+                    # 既没有生产订单号也没有内部订单号
                     return {
                         "success": False,
                         "intent": intent,
-                        "message": "内部订单的齐套性检查功能暂未实现"
+                        "message": "请提供生产订单号或内部订单号，例如：检查生产订单8900000009的齐套性 或 检查内部订单0000001013的齐套性"
                     }
             except Exception as e:
                 logger.error(f"齐套性检查失败: {str(e)}", exc_info=True)

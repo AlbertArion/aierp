@@ -161,7 +161,9 @@ class ERPServiceClient:
                 if 400 <= e.response.status_code < 500:
                     # 4xx错误不重试
                     error_data = e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else {"msg": str(e)}
-                    raise Exception(f"{service_name}服务错误: {error_data.get('msg', str(e))}")
+                    # 提取原始错误信息，不添加服务名前缀，以便后续错误处理能正确识别错误类型
+                    error_msg = error_data.get('msg') or error_data.get('message') or str(e)
+                    raise Exception(error_msg)
                 
                 # 5xx错误重试
                 if attempt < self.retry_count - 1:

@@ -159,6 +159,80 @@ class AgentMessageService:
             raise
         finally:
             conn.close()
+
+    def send_message_to_users(
+        self,
+        sender_agent: str,
+        receiver_agent: str,
+        message_type: str,
+        content: Dict[str, Any],
+        receiver_user_ids: List[str],
+        sender_user_id: Optional[str] = None,
+        context_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        priority: str = "NORMAL",
+        mandt: Optional[str] = None,
+        tenant_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        向拥有接收 agent 权限的多个用户分别发送同一条消息（每人一条记录，独立已读/已处理状态）。
+        
+        Args:
+            receiver_user_ids: 接收者用户 ID 列表（通常来自 get_agent_authorized_user_ids）
+        其他参数同 send_message。
+        
+        Returns:
+            包含 messageIds（列表）、conversationId、recipientCount 的字典
+        """
+        if not receiver_user_ids:
+            return {
+                "messageIds": [],
+                "conversationId": conversation_id or "",
+                "recipientCount": 0
+            }
+        base_conv = conversation_id or f"CONV_{receiver_agent}_BROADCAST_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6].upper()}"
+        content_json = json.dumps(content, ensure_ascii=False)
+        conn = connect(self.db_path)
+        cursor = conn.cursor()
+        message_ids = []
+        try:
+            for uid in receiver_user_ids:
+                message_id = f"MSG_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8].upper()}"
+                cursor.execute("""
+                    INSERT INTO agent_messages 
+                    (message_id, message_type, sender_agent, sender_user_id, 
+                     receiver_agent, receiver_user_id, context_id, conversation_id, content, 
+                     priority, mandt, tenant_id, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    message_id,
+                    message_type,
+                    sender_agent,
+                    sender_user_id,
+                    receiver_agent,
+                    uid,
+                    context_id,
+                    base_conv,
+                    content_json,
+                    priority,
+                    mandt,
+                    tenant_id,
+                    "PENDING"
+                ))
+                message_ids.append(message_id)
+            conn.commit()
+            logger.info(f"消息已群发: 从 {sender_agent} 到 {receiver_agent}, 共 {len(message_ids)} 人, conversationId={base_conv}")
+            return {
+                "messageIds": message_ids,
+                "conversationId": base_conv,
+                "recipientCount": len(message_ids)
+            }
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"群发消息失败: {e}", exc_info=True)
+            raise
+        finally:
+            conn.close()
     
     def receive_messages(
         self,

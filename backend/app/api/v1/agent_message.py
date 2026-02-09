@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
 import logging
 from app.services.agent_message_service import AgentMessageService
-from app.services.agent_permission_service import is_user_authorized_for_agent
+from app.services.agent_permission_service import is_user_authorized_for_agent, get_agent_authorized_user_ids
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,8 @@ class SendMessageRequest(BaseModel):
     content: Dict[str, Any]
     sender_user_id: Optional[str] = None
     receiver_user_id: Optional[str] = None
+    """为 True 且未填 receiver_user_id 时，向拥有该接收 agent 权限的所有用户各发一条消息（每人独立已读/已处理）"""
+    broadcast_to_authorized: bool = False
     context_id: Optional[str] = None
     conversation_id: Optional[str] = None
     priority: str = "NORMAL"
@@ -67,6 +69,27 @@ async def send_message(
     }
     """
     try:
+        # 发送给拥有接收 agent 权限的所有用户（每人一条，独立已读/已处理）
+        if request.broadcast_to_authorized and not request.receiver_user_id:
+            user_ids = get_agent_authorized_user_ids(request.receiver_agent, use_cache=True)
+            result = message_service.send_message_to_users(
+                sender_agent=request.sender_agent,
+                receiver_agent=request.receiver_agent,
+                message_type=request.message_type,
+                content=request.content,
+                receiver_user_ids=user_ids,
+                sender_user_id=request.sender_user_id,
+                context_id=request.context_id,
+                conversation_id=request.conversation_id,
+                priority=request.priority,
+                mandt=request.mandt,
+                tenant_id=request.tenant_id
+            )
+            return {
+                "code": 200,
+                "msg": "消息已发送给拥有该 Agent 权限的所有用户",
+                "data": result
+            }
         result = message_service.send_message(
             sender_agent=request.sender_agent,
             receiver_agent=request.receiver_agent,
@@ -80,7 +103,6 @@ async def send_message(
             mandt=request.mandt,
             tenant_id=request.tenant_id
         )
-        
         return {
             "code": 200,
             "msg": "消息发送成功",

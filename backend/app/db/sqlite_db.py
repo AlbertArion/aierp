@@ -1027,6 +1027,26 @@ class SQLiteDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_operation_impact_metric_time ON biz_operation_impact_record(metric_id, operation_time DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_measure_execution_issue ON biz_measure_execution_record(issue_id)')
 
+        # ========== 通用配置表 ==========
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sys_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                config_key TEXT NOT NULL UNIQUE,
+                config_value TEXT,
+                config_type TEXT DEFAULT 'string',
+                category TEXT DEFAULT 'system',
+                description TEXT,
+                is_encrypted INTEGER DEFAULT 0,
+                is_enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT,
+                updated_by TEXT
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sys_config_key ON sys_config(config_key)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sys_config_category ON sys_config(category)')
+
         self.conn.commit()
 
         # 兼容新增列：为任务表补充文件路径列

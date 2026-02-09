@@ -112,13 +112,20 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
             "extracted": {"ebeln": "4500000123", "banfn": None}
         }
     """
-    # 检查是否启用LLM
-    use_llm = os.getenv("USE_LLM_MM_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("MM_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
     
-    if not use_llm or not openai_api_key or not openai_base_url:
+    use_llm = config_service.is_llm_enabled("mm")
+    if not use_llm:
+        return None
+    
+    llm_config = config_service.get_llm_config("mm")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
+    
+    if not openai_api_key or not openai_base_url:
         return None
     
     try:
@@ -292,10 +299,15 @@ def _identify_intent(text: str) -> str:
 
 async def _handle_smalltalk_with_llm(query: str, intent: str) -> Dict[str, Any]:
     """处理闲聊或超出能力范围的问题，使用LLM自动回答"""
-    use_llm = os.getenv("USE_LLM_MM_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("MM_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
+    
+    use_llm = config_service.is_llm_enabled("mm")
+    llm_config = config_service.get_llm_config("mm")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
     
     explanation = None
     
@@ -409,31 +421,30 @@ async def mm_ai_query(
         
         logger.info(f"收到MM Agent查询: {query}")
         
-        # 识别意图：优先使用LLM，失败则使用规则匹配
-        intent = None
-        extracted = {}
-        llm_result = await _identify_intent_with_llm(query)
+        # 使用AgentModeAdapter统一识别意图
+        from app.utils.agent_mode_adapter import AgentModeAdapter
+        adapter = AgentModeAdapter()
+        intent_result = await adapter.identify_intent(query, "mm")
         
-        if llm_result and llm_result.get("intent"):
-            intent = llm_result.get("intent")
-            confidence = llm_result.get("confidence", 0.0)
-            extracted = llm_result.get("extracted", {})
-            logger.info(f"LLM识别意图: {intent}, 置信度: {confidence}, 提取信息: {extracted}")
-            
-            if confidence < 0.5:
-                logger.warning(f"LLM置信度太低({confidence})，回退到规则匹配")
-                intent = None
+        # 处理未识别的情况
+        if intent_result.get("unrecognized"):
+            return {
+                "success": False,
+                "message": "抱歉，我没有识别到您的操作。请尝试使用以下方式：\n1. 使用关键词查询（如：查询订单、查看申请等）\n2. 点击页面上的功能按钮进行操作",
+                "suggestions": [
+                    "查询采购订单列表",
+                    "查看采购订单详情",
+                    "创建采购订单",
+                    "查询采购申请列表"
+                ],
+                "intent": None
+            }
         
-        # 如果LLM识别失败或置信度太低，使用规则匹配
-        if not intent:
-            intent = _identify_intent(query)
-            logger.info(f"规则匹配识别意图: {intent}")
-            
-            # 使用规则提取订单号等信息
-            if not extracted.get("ebeln"):
-                extracted["ebeln"] = _extract_purchase_order_number(query)
-            if not extracted.get("banfn"):
-                extracted["banfn"] = _extract_purchase_requisition_number(query)
+        intent = intent_result.get("intent")
+        extracted = intent_result.get("extracted", {})
+        mode = intent_result.get("mode", "rule")
+        
+        logger.info(f"识别意图: {intent}, 模式: {mode}, 提取信息: {extracted}")
         
         # 根据意图处理
         if intent == "CREATE_PURCHASE_ORDER":

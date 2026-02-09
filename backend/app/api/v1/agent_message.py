@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
 import logging
 from app.services.agent_message_service import AgentMessageService
+from app.services.agent_permission_service import is_user_authorized_for_agent
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,8 @@ async def receive_messages(
         "limit": 50
     }
     """
+    if not is_user_authorized_for_agent(request.receiver_agent, request.receiver_user_id):
+        return {"code": 200, "msg": "获取消息成功", "data": []}
     try:
         messages = message_service.receive_messages(
             receiver_agent=request.receiver_agent,
@@ -138,6 +141,8 @@ async def receive_messages_get(
     """
     接收消息（GET方式）
     """
+    if not is_user_authorized_for_agent(receiver_agent, receiver_user_id):
+        return {"code": 200, "msg": "获取消息成功", "data": []}
     try:
         messages = message_service.receive_messages(
             receiver_agent=receiver_agent,
@@ -198,6 +203,8 @@ async def get_unread_count(
     message_service: AgentMessageService = Depends(get_message_service)
 ) -> Dict[str, Any]:
     """获取未读消息数量"""
+    if not is_user_authorized_for_agent(receiver_agent, receiver_user_id):
+        return {"code": 200, "msg": "获取未读消息数量成功", "data": {"count": 0}}
     try:
         count = message_service.get_unread_count(
             receiver_agent=receiver_agent,
@@ -224,6 +231,8 @@ async def get_conversations(
     message_service: AgentMessageService = Depends(get_message_service)
 ) -> Dict[str, Any]:
     """获取有未读消息的对话列表"""
+    if not is_user_authorized_for_agent(receiver_agent, receiver_user_id):
+        return {"code": 200, "msg": "获取对话列表成功", "data": []}
     try:
         conversations = message_service.get_conversations_with_unread(
             receiver_agent=receiver_agent,
@@ -247,6 +256,8 @@ async def get_conversations_with_unread(
     message_service: AgentMessageService = Depends(get_message_service)
 ) -> Dict[str, Any]:
     """获取有未读消息的对话列表（FI Agent使用）"""
+    if not is_user_authorized_for_agent(receiver_agent, receiver_user_id):
+        return {"code": 200, "msg": "获取对话列表成功", "data": []}
     try:
         conversations = message_service.get_conversations_with_unread(
             receiver_agent=receiver_agent,
@@ -273,6 +284,8 @@ async def receive_messages_for_fi(
     message_service: AgentMessageService = Depends(get_message_service)
 ) -> Dict[str, Any]:
     """接收对话消息（FI Agent使用）"""
+    if not is_user_authorized_for_agent(receiver_agent, receiver_user_id):
+        return {"code": 200, "msg": "获取消息成功", "data": []}
     try:
         messages = message_service.receive_messages(
             receiver_agent=receiver_agent,

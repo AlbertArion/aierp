@@ -195,12 +195,20 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
             "extracted": {"belnr": "1000000001", "gjahr": "2025", "monat": "01"}
         }
     """
-    use_llm = os.getenv("USE_LLM_FI_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("FI_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
     
-    if not use_llm or not openai_api_key or not openai_base_url:
+    use_llm = config_service.is_llm_enabled("fi")
+    if not use_llm:
+        return None
+    
+    llm_config = config_service.get_llm_config("fi")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
+    
+    if not openai_api_key or not openai_base_url:
         return None
     
     try:
@@ -439,38 +447,31 @@ async def fi_ai_query(
         
         logger.info(f"收到FI Agent查询: {query}")
         
-        # 识别意图：优先使用LLM，失败则使用规则匹配
-        intent = None
-        extracted = {}
-        llm_result = await _identify_intent_with_llm(query)
+        # 使用AgentModeAdapter统一识别意图
+        from app.utils.agent_mode_adapter import AgentModeAdapter
+        adapter = AgentModeAdapter()
+        intent_result = await adapter.identify_intent(query, "fi")
         
-        if llm_result and llm_result.get("intent"):
-            intent = llm_result.get("intent")
-            confidence = llm_result.get("confidence", 0.0)
-            extracted = llm_result.get("extracted", {})
-            logger.info(f"LLM识别意图: {intent}, 置信度: {confidence}, 提取信息: {extracted}")
-            
-            if confidence < 0.3:
-                logger.warning(f"LLM置信度太低({confidence})，回退到规则匹配")
-                intent = None
+        # 处理未识别的情况
+        if intent_result.get("unrecognized"):
+            return {
+                "success": False,
+                "message": "抱歉，我没有识别到您的操作。请尝试使用以下方式：\n1. 使用关键词查询（如：查询凭证、查看订单等）\n2. 点击页面上的功能按钮进行操作",
+                "suggestions": [
+                    "查询凭证列表",
+                    "查看凭证详情",
+                    "创建凭证",
+                    "查询科目列表",
+                    "查询余额"
+                ],
+                "intent": None
+            }
         
-        # 如果LLM识别失败或置信度太低，使用规则匹配作为fallback
-        if not intent:
-            intent = _identify_intent(query)
-            logger.info(f"规则匹配识别意图: {intent}")
-            
-            # 使用规则提取信息
-            if not extracted.get("belnr"):
-                extracted["belnr"] = _extract_document_number(query)
-            if not extracted.get("gjahr") or not extracted.get("monat"):
-                period = _extract_year_month(query)
-                if period:
-                    extracted.update(period)
-            if not extracted.get("saknr") and not extracted.get("account_code"):
-                account_code = _extract_account_number(query)
-                if account_code:
-                    extracted["saknr"] = account_code
-                    extracted["account_code"] = account_code
+        intent = intent_result.get("intent")
+        extracted = intent_result.get("extracted", {})
+        mode = intent_result.get("mode", "rule")
+        
+        logger.info(f"识别意图: {intent}, 模式: {mode}, 提取信息: {extracted}")
         
         # 根据意图处理
         if intent == "QUERY_DOCUMENT_LIST":

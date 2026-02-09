@@ -484,11 +484,15 @@ async def ai_query(
             no_entity = not any([material_name, specification]) and not keyword
             return no_entity and len(q.strip()) <= 12
 
-        # 获取LLM配置
-        use_llm = os.getenv("USE_LLM_PRICING", "true").lower() == "true"
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        openai_base_url = os.getenv("OPENAI_BASE_URL")
-        openai_model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+        # 优先从配置服务读取，fallback到环境变量
+        from app.services.config_service import ConfigService
+        _config_service = ConfigService()
+        
+        use_llm = _config_service.is_llm_enabled("pricing")
+        _llm_config = _config_service.get_llm_config("pricing")
+        openai_api_key = _llm_config["api_key"]
+        openai_base_url = _llm_config["base_url"]
+        openai_model = _llm_config["model"]
 
         if _is_smalltalk(text):
             explanation = None

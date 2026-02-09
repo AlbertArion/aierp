@@ -524,13 +524,20 @@ async def _identify_intent_with_llm(text: str, language: str = "zh") -> Dict[str
             "extracted": {"vbeln": "VB2025000059", "delivery_vbeln": None}
         }
     """
-    # 检查是否启用LLM
-    use_llm = os.getenv("USE_LLM_SD_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("SD_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
     
-    if not use_llm or not openai_api_key or not openai_base_url:
+    use_llm = config_service.is_llm_enabled("sd")
+    if not use_llm:
+        return None
+    
+    llm_config = config_service.get_llm_config("sd")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
+    
+    if not openai_api_key or not openai_base_url:
         return None
     
     try:
@@ -728,11 +735,15 @@ async def _handle_smalltalk_with_llm(query: str, intent: str, language: str = "z
     Returns:
         包含LLM回答的响应
     """
-    # 检查是否启用LLM
-    use_llm = os.getenv("USE_LLM_SD_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("SD_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
+    
+    use_llm = config_service.is_llm_enabled("sd")
+    llm_config = config_service.get_llm_config("sd")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
     
     explanation = None
     
@@ -846,41 +857,51 @@ async def sd_ai_query(
         language = _get_language_from_header(accept_language)
         logger.info(f"当前语言环境: {language} (Accept-Language: {accept_language})")
         
-        # 识别意图：优先使用LLM，失败则使用规则匹配
-        intent = None
-        extracted = {}
-        llm_result = await _identify_intent_with_llm(query, language)
+        # 使用AgentModeAdapter统一识别意图
+        from app.utils.agent_mode_adapter import AgentModeAdapter
+        adapter = AgentModeAdapter()
+        intent_result = await adapter.identify_intent(query, "sd")
         
-        if llm_result and llm_result.get("intent"):
-            # LLM识别成功
-            intent = llm_result.get("intent")
-            confidence = llm_result.get("confidence", 0.0)
-            extracted = llm_result.get("extracted", {})
-            logger.info(f"LLM识别意图: {intent}, 置信度: {confidence}, 提取信息: {extracted}")
-            
-            # 如果置信度太低（<0.3），回退到规则匹配
-            if confidence < 0.3:
-                logger.warning(f"LLM置信度太低({confidence})，回退到规则匹配")
-                intent = None
+        # 处理未识别的情况
+        if intent_result.get("unrecognized"):
+            return {
+                "success": False,
+                "message": "抱歉，我没有识别到您的操作。请尝试使用以下方式：\n1. 使用关键词查询（如：查询订单、查看交货等）\n2. 点击页面上的功能按钮进行操作",
+                "suggestions": [
+                    "查询销售订单列表",
+                    "查看销售订单详情",
+                    "查询交货单列表",
+                    "查看交货单详情",
+                    "查询开票列表"
+                ],
+                "intent": None
+            }
         
-        # 如果LLM识别失败或置信度太低，使用规则匹配作为fallback
-        if not intent:
-            intent = _identify_intent(query)
-            logger.info(f"规则匹配识别意图: {intent}")
-            
-            # 使用规则提取订单号等信息（作为LLM提取的补充）
-            if not extracted.get("vbeln"):
-                extracted["vbeln"] = _extract_order_number(query)
-            if not extracted.get("delivery_vbeln"):
-                extracted["delivery_vbeln"] = _extract_delivery_number(query)
-            if not extracted.get("aufnr"):
-                extracted["aufnr"] = _extract_production_order_number(query)
-            if not extracted.get("internal_aufnr"):
-                extracted["internal_aufnr"] = _extract_internal_order_number(query)
-            if not extracted.get("ebeln"):
-                extracted["ebeln"] = _extract_purchase_order_number(query)
-            if not extracted.get("ebeln"):
-                extracted["ebeln"] = _extract_purchase_order_number(query)
+        intent = intent_result.get("intent")
+        extracted = intent_result.get("extracted", {})
+        mode = intent_result.get("mode", "rule")
+        logger.info(f"识别意图: {intent}, 模式: {mode}, 提取信息: {extracted}")
+        
+        # 纠正意图：用户明确请求 ATP/物料可用性 时，应返回 ATP 检查结果卡片而非订单详情
+        query_lower = query.lower()
+        if intent == "QUERY_ORDER_DETAIL" and any(
+            kw in query_lower or kw in query
+            for kw in ["atp", "物料可用性", "可用性检查", "齐套性", "齐套性检查", "物料可用", "库存检查", "检查库存", "库存够"]
+        ):
+            intent = "ATP_CHECK"
+            logger.info(f"意图纠正: QUERY_ORDER_DETAIL -> ATP_CHECK（用户请求为ATP/物料可用性检查）")
+        
+        # 补充规则提取订单号等信息（AgentModeAdapter可能已提取部分信息）
+        if not extracted.get("vbeln"):
+            extracted["vbeln"] = _extract_order_number(query)
+        if not extracted.get("delivery_vbeln"):
+            extracted["delivery_vbeln"] = _extract_delivery_number(query)
+        if not extracted.get("aufnr"):
+            extracted["aufnr"] = _extract_production_order_number(query)
+        if not extracted.get("internal_aufnr"):
+            extracted["internal_aufnr"] = _extract_internal_order_number(query)
+        if not extracted.get("ebeln"):
+            extracted["ebeln"] = _extract_purchase_order_number(query)
         
         # 根据意图处理
         if intent == "QUERY_ORDER_LIST":
@@ -3366,11 +3387,15 @@ async def _extract_sales_modifications_with_llm(query: str) -> Dict[str, Optiona
             "sales_office": "销售办事处名称（如果提到）"
         }
     """
-    # 检查是否启用LLM
-    use_llm = os.getenv("USE_LLM_SD_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("SD_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
+    
+    use_llm = config_service.is_llm_enabled("sd")
+    llm_config = config_service.get_llm_config("sd")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
     
     if not use_llm or not openai_api_key or not openai_base_url:
         return {"sales_group": None, "sales_office": None}

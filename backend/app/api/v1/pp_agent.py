@@ -275,13 +275,20 @@ async def _identify_intent_with_llm(text: str) -> Dict[str, Any]:
             "extracted": {"aufnr": "001010014285", "matnr": None}
         }
     """
-    # 检查是否启用LLM
-    use_llm = os.getenv("USE_LLM_PP_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("PP_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
     
-    if not use_llm or not openai_api_key or not openai_base_url:
+    use_llm = config_service.is_llm_enabled("pp")
+    if not use_llm:
+        return None
+    
+    llm_config = config_service.get_llm_config("pp")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
+    
+    if not openai_api_key or not openai_base_url:
         return None
     
     try:
@@ -533,11 +540,15 @@ async def _generate_abap_code(query: str, tables: list = None, conditions: list 
     Returns:
         包含生成的ABAP代码的响应
     """
-    # 检查是否启用LLM
-    use_llm = os.getenv("USE_LLM_PP_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("PP_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
+    
+    use_llm = config_service.is_llm_enabled("pp")
+    llm_config = config_service.get_llm_config("pp")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
     
     if not use_llm or not openai_api_key or not openai_base_url:
         return {
@@ -715,11 +726,15 @@ async def _generate_abap_code_stream(
         SSE格式的数据块
     """
     try:
-        # 检查是否启用LLM
-        use_llm = os.getenv("USE_LLM_PP_AGENT", "true").lower() == "true"
-        openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-        openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        openai_model = os.getenv("PP_AGENT_LLM_MODEL", "qwen-max-latest")
+        # 优先从配置服务读取，fallback到环境变量
+        from app.services.config_service import ConfigService
+        config_service = ConfigService()
+        
+        use_llm = config_service.is_llm_enabled("pp")
+        llm_config = config_service.get_llm_config("pp")
+        openai_api_key = llm_config["api_key"]
+        openai_base_url = llm_config["base_url"]
+        openai_model = llm_config["model"]
         
         if not use_llm or not openai_api_key or not openai_base_url:
             yield f"data: {json.dumps({'error': 'LLM服务未配置'}, ensure_ascii=False)}\n\n"
@@ -933,11 +948,15 @@ async def _handle_smalltalk_or_out_of_scope(query: str, intent: str) -> Dict[str
     Returns:
         包含LLM回答的响应
     """
-    # 检查是否启用LLM
-    use_llm = os.getenv("USE_LLM_PP_AGENT", "true").lower() == "true"
-    openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
-    openai_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    openai_model = os.getenv("PP_AGENT_LLM_MODEL", "qwen-max-latest")
+    # 优先从配置服务读取，fallback到环境变量
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
+    
+    use_llm = config_service.is_llm_enabled("pp")
+    llm_config = config_service.get_llm_config("pp")
+    openai_api_key = llm_config["api_key"]
+    openai_base_url = llm_config["base_url"]
+    openai_model = llm_config["model"]
     
     explanation = None
     
@@ -1065,18 +1084,31 @@ async def pp_ai_query(
         
         logger.info(f"收到PP Agent查询: {query}")
         
-        # 识别意图：优先使用LLM，失败则使用规则匹配
-        extracted = {}
-        intent_result = await _identify_intent_with_llm(query)
-        if intent_result and intent_result.get("confidence", 0) > 0.7:
-            # LLM识别成功且置信度高
-            intent = intent_result.get("intent", "SMALLTALK")
-            extracted = intent_result.get("extracted", {})
-            logger.info(f"LLM识别意图: {intent}, 置信度: {intent_result.get('confidence', 0)}, 提取信息: {extracted}")
-        else:
-            # 使用规则匹配
-            intent = _identify_intent(query)
-            logger.info(f"规则识别意图: {intent}")
+        # 使用AgentModeAdapter统一识别意图
+        from app.utils.agent_mode_adapter import AgentModeAdapter
+        adapter = AgentModeAdapter()
+        intent_result = await adapter.identify_intent(query, "pp")
+        
+        # 处理未识别的情况
+        if intent_result.get("unrecognized"):
+            return {
+                "success": False,
+                "message": "抱歉，我没有识别到您的操作。请尝试使用以下方式：\n1. 使用关键词查询（如：查询生产订单、查看报工等）\n2. 点击页面上的功能按钮进行操作",
+                "suggestions": [
+                    "查询生产订单列表",
+                    "查看生产订单详情",
+                    "查询报工一览表",
+                    "查询未报工情况",
+                    "月结异常检测",
+                    "订单状态监控"
+                ],
+                "intent": None
+            }
+        
+        intent = intent_result.get("intent")
+        extracted = intent_result.get("extracted", {})
+        mode = intent_result.get("mode", "rule")
+        logger.info(f"识别意图: {intent}, 模式: {mode}, 提取信息: {extracted}")
         
         # 根据意图处理
         if intent == "QUERY_ORDER_LIST":

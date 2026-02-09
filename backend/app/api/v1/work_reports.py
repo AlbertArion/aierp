@@ -474,10 +474,19 @@ async def ai_query(
         logger.info(f"  📅 结束日期: '{end_date}'")
 
         # 若用户开启LLM并配置了密钥，则优先走LLM function call
-        use_llm = os.getenv("USE_LLM_WORKREPORT", "true").lower() == "true"
-        openai_api_key = os.getenv("OPENAI_API_KEY", 'sk-c3ddf7d415bb492587f725ec3845a4ce')
-        openai_base_url = os.getenv("OPENAI_BASE_URL", 'https://dashscope.aliyuncs.com/compatible-mode/v1')
-        openai_model = os.getenv("WORKREPORT_LLM_MODEL", "qwen-max-latest")
+        # 优先从配置服务读取，fallback到环境变量
+        from app.services.config_service import ConfigService
+        config_service = ConfigService()
+        
+        use_llm = config_service.is_llm_enabled("workreport")
+        llm_config = config_service.get_llm_config("workreport")
+        openai_api_key = llm_config["api_key"]
+        openai_base_url = llm_config["base_url"]
+        openai_model = llm_config["model"]
+        
+        # 如果未配置API密钥，禁用LLM功能
+        if not openai_api_key:
+            use_llm = False
 
         print(f"use_llm: {use_llm}")
         print(f"openai_api_key: {openai_api_key}")

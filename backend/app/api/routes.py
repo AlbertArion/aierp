@@ -3,8 +3,10 @@ from fastapi import FastAPI
 # 说明：集中注册各业务模块的路由
 
 def register_routes(app: FastAPI) -> None:
-    from .v1 import data, predict, process, orders, auth, work_reports, pricing, batch_pricing, sap_work_reports, sd_agent, pp_agent, mm_agent, fi_agent, co_agent, business_issues, operation_evaluation, metric_config, agent_message, pp_agent_message, mm_agent_message
+    from .v1 import data, predict, process, orders, auth, work_reports, pricing, batch_pricing, sap_work_reports, sd_agent, pp_agent, mm_agent, fi_agent, co_agent, business_issues, operation_evaluation, metric_config, agent_message, pp_agent_message, mm_agent_message, config, agent_actions, inventory_cost
 
+    app.include_router(config.router, prefix="/api/v1", tags=["配置管理"])
+    app.include_router(agent_actions.router, prefix="/api/v1", tags=["Agent操作"])
     app.include_router(data.router, prefix="/api/data", tags=["data"])
     app.include_router(predict.router, prefix="/api/predict", tags=["predict"])
     app.include_router(process.router, prefix="/api/process", tags=["process"])
@@ -25,5 +27,6 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(business_issues.router, prefix="/api", tags=["业务问题"])
     app.include_router(operation_evaluation.router, prefix="/api", tags=["操作评估"])
     app.include_router(metric_config.router, prefix="/api", tags=["指标配置"])
+    app.include_router(inventory_cost.router, prefix="/api", tags=["库存成本分析"])
 
 

@@ -20,31 +20,78 @@ class LLMCallCost:
 
 
 class LLMClient:
-    def __init__(self, provider: str = "qwen", timeout_seconds: int = 15, max_retries: int = 2):
-        self.provider = provider
-        self.timeout_seconds = timeout_seconds
-        self.max_retries = max_retries
-        self.api_key = os.getenv("LLM_API_KEY", "")
-        self.api_base = os.getenv("LLM_API_BASE", "")  # 若配置则走真实HTTP接口
-        self.default_model = os.getenv("LLM_MODEL", "")
-        self.use_real = os.getenv("USE_REAL_LLM", "false").lower() == "true"
+    def __init__(self, provider: str = None, timeout_seconds: int = None, max_retries: int = None):
+        """
+        初始化LLM客户端
+        
+        Args:
+            provider: 提供商（如果为None，从配置读取）
+            timeout_seconds: 超时时间（如果为None，从配置读取）
+            max_retries: 最大重试次数（如果为None，从配置读取）
+        """
+        # 延迟导入避免循环依赖
+        from app.services.config_service import ConfigService
+        self.config_service = ConfigService()
+        
+        # 从配置读取或使用传入参数
+        self.provider = provider or self.config_service.get_config("llm.provider", "qwen")
+        self.timeout_seconds = timeout_seconds or self.config_service.get_config("llm.timeout", 15)
+        self.max_retries = max_retries or self.config_service.get_config("llm.max_retries", 2)
+        
+        # 从配置读取API密钥和Base URL
+        self.api_key = self.config_service.get_config("llm.api_key", "")
+        if not self.api_key:
+            # Fallback到环境变量
+            self.api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
+        
+        self.api_base = self.config_service.get_config("llm.base_url", "")
+        if not self.api_base:
+            # Fallback到环境变量
+            self.api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_API_BASE", "")
+        
+        self.default_model = self.config_service.get_config("llm.model", "")
+        if not self.default_model:
+            # Fallback到环境变量
+            self.default_model = os.getenv("LLM_MODEL", "")
+        
+        self.use_real = self.config_service.get_config("llm.use_real", False)
+        if self.use_real is None:
+            # Fallback到环境变量
+            self.use_real = os.getenv("USE_REAL_LLM", "false").lower() == "true"
+
+    def _get_unit_price(self) -> float:
+        """获取当前提供商的token价格"""
+        if self.provider == "deepseek":
+            return self.config_service.get_config("llm.unit_price_deepseek", 0.002)
+        else:
+            return self.config_service.get_config("llm.unit_price_default", 0.003)
 
     def _mock_token_count(self, prompt: str, completion: str) -> LLMCallCost:
-        # 示例：简单按字符数估算为token，真实实现请接入各模型的tokenizer
+        """估算token数量"""
         prompt_tokens = max(1, len(prompt) // 4)
         completion_tokens = max(1, len(completion) // 4)
-        unit_price = 0.002 if self.provider == "deepseek" else 0.003
+        unit_price = self._get_unit_price()
         return LLMCallCost(prompt_tokens, completion_tokens, unit_price)
 
-    def chat(self, prompt: str, model: Optional[str] = None, temperature: float = 0.2) -> Dict[str, Any]:
-        # 若配置了真实调用环境，则使用HTTP最小闭环；否则使用占位
+    def chat(self, prompt: str, model: Optional[str] = None, temperature: float = None) -> Dict[str, Any]:
+        """
+        调用LLM API
+        
+        Args:
+            prompt: 提示词
+            model: 模型名称（如果为None，使用默认模型）
+            temperature: 温度参数（如果为None，从配置读取）
+        """
+        if temperature is None:
+            temperature = self.config_service.get_config("llm.temperature", 0.2)
+        
         last_error: Optional[Exception] = None
-        for _ in range(self.max_retries + 1):
+        for attempt in range(self.max_retries + 1):
             try:
                 start = time.time()
+                
                 if self.use_real and self.api_base and self.api_key:
-                    # 统一的最小HTTP接口：POST {api_base}/chat
-                    # 你可以在网关侧将其映射到Qwen/DeepSeek官方HTTP接口
+                    # 使用真实LLM API调用
                     headers = {
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
@@ -65,13 +112,15 @@ class LLMClient:
                     data = resp.json()
                     completion = data.get("content") or data.get("text") or ""
                 else:
-                    # 占位返回
+                    # 占位返回（用于测试或未配置时）
                     completion = "placeholder response"
+                
                 elapsed = time.time() - start
                 cost = self._mock_token_count(prompt, completion)
+                
                 return {
                     "provider": self.provider,
-                    "model": model or "auto",
+                    "model": model or self.default_model or "auto",
                     "prompt": prompt,
                     "completion": completion,
                     "elapsed_seconds": elapsed,
@@ -84,6 +133,9 @@ class LLMClient:
                 }
             except Exception as e:  # noqa: BLE001
                 last_error = e
-        raise RuntimeError(f"LLM request failed: {last_error}")
+                if attempt < self.max_retries:
+                    time.sleep(1)  # 重试前等待1秒
+        
+        raise RuntimeError(f"LLM request failed after {self.max_retries + 1} attempts: {last_error}")
 
 

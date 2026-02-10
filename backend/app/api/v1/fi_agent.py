@@ -401,6 +401,18 @@ def _identify_intent(text: str) -> str:
     if "总账" in text_lower:
         return "QUERY_GENERAL_LEDGER"
     
+    # 供应商列表（需在默认凭证列表之前，避免"查询供应商列表"被误判为凭证列表）
+    if "供应商" in text_lower and ("列表" in text_lower or "查询" in text_lower or "所有" in text_lower):
+        return "QUERY_VENDOR_LIST"
+    
+    # 汇率列表
+    if "汇率" in text_lower and ("列表" in text_lower or "查询" in text_lower or "所有" in text_lower):
+        return "QUERY_EXCHANGE_RATE_LIST"
+    
+    # 应付账款列表
+    if "应付账款" in text_lower and ("列表" in text_lower or "查询" in text_lower or "查看" in text_lower or "所有" in text_lower):
+        return "QUERY_ACCOUNTS_PAYABLE_LIST"
+    
     # 默认返回凭证列表查询
     return "QUERY_DOCUMENT_LIST"
 
@@ -497,6 +509,126 @@ async def fi_ai_query(
                     "size": data.get("size", size)
                 }
             }
+        
+        elif intent == "QUERY_VENDOR_LIST":
+            # 查询供应商列表（调用 sinocst-master-data LFA1 接口）
+            current = payload.get("current", 1)
+            size = payload.get("size", 10)
+            try:
+                result = await fi_service.get_vendor_list(
+                    current=current,
+                    size=size,
+                    **{k: v for k, v in extracted.items() if v}
+                )
+                data = result.get("data", {})
+                if isinstance(data, dict):
+                    records = data.get("records", [])
+                    total = data.get("total", len(records))
+                    cur = data.get("current", current)
+                    sz = data.get("size", size)
+                else:
+                    records = data if isinstance(data, list) else []
+                    total = len(records)
+                    cur = current
+                    sz = size
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "vendor_list",
+                        "vendors": records,
+                        "total": total,
+                        "current": cur,
+                        "size": sz
+                    }
+                }
+            except Exception as e:
+                logger.error(f"查询供应商列表失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": f"查询供应商列表时出错：{str(e)}"
+                }
+        
+        elif intent == "QUERY_EXCHANGE_RATE_LIST":
+            # 查询汇率列表
+            current = payload.get("current", 1)
+            size = payload.get("size", 10)
+            try:
+                result = await fi_service.get_exchange_rate_list(
+                    current=current,
+                    size=size,
+                    **{k: v for k, v in extracted.items() if v}
+                )
+                data = result.get("data", {})
+                if isinstance(data, dict):
+                    records = data.get("records", [])
+                    total = data.get("total", len(records))
+                    cur = data.get("current", current)
+                    sz = data.get("size", size)
+                else:
+                    records = data if isinstance(data, list) else []
+                    total = len(records)
+                    cur = current
+                    sz = size
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "exchange_rate_list",
+                        "exchangeRates": records,
+                        "total": total,
+                        "current": cur,
+                        "size": sz
+                    }
+                }
+            except Exception as e:
+                logger.error(f"查询汇率列表失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": f"查询汇率列表时出错：{str(e)}"
+                }
+        
+        elif intent == "QUERY_ACCOUNTS_PAYABLE_LIST":
+            # 查询应付账款列表
+            current = payload.get("current", 1)
+            size = payload.get("size", 10)
+            try:
+                result = await fi_service.get_accounts_payable_list(
+                    current=current,
+                    size=size,
+                    **{k: v for k, v in extracted.items() if v}
+                )
+                data = result.get("data", {})
+                if isinstance(data, dict):
+                    records = data.get("records", [])
+                    total = data.get("total", len(records))
+                    cur = data.get("current", current)
+                    sz = data.get("size", size)
+                else:
+                    records = data if isinstance(data, list) else []
+                    total = len(records)
+                    cur = current
+                    sz = size
+                return {
+                    "success": True,
+                    "intent": intent,
+                    "data": {
+                        "type": "accounts_payable_list",
+                        "items": records,
+                        "total": total,
+                        "current": cur,
+                        "size": sz
+                    }
+                }
+            except Exception as e:
+                logger.error(f"查询应付账款列表失败: {str(e)}", exc_info=True)
+                return {
+                    "success": False,
+                    "intent": intent,
+                    "message": f"查询应付账款列表时出错：{str(e)}"
+                }
         
         elif intent == "QUERY_DOCUMENT_DETAIL":
             # 查询凭证详情

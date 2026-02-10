@@ -390,6 +390,90 @@ class FIService:
             path=f"/sinocst-module-fa/accounting-document/{belnr}"
         )
     
+    async def get_vendor_list(
+        self,
+        current: int = 1,
+        size: int = 10,
+        **filters
+    ) -> Dict[str, Any]:
+        """
+        获取供应商列表（调用 sinocst-master-data 的 LFA1 接口）
+        
+        Args:
+            current: 当前页码
+            size: 每页数量
+            **filters: 其他筛选条件（如 lifnr、name1 等）
+        
+        Returns:
+            供应商列表数据
+        """
+        params = {
+            "current": current,
+            "size": size,
+            **filters
+        }
+        return await self._request(
+            method="GET",
+            path="/sinocst-master-data/sinocst-lfa1/lfa1/list",
+            params=params
+        )
+    
+    async def get_exchange_rate_list(
+        self,
+        current: int = 1,
+        size: int = 10,
+        **filters
+    ) -> Dict[str, Any]:
+        """
+        获取汇率列表（调用 sinocst-module-fa gl/exchange-rates 接口）
+        
+        Args:
+            current: 当前页码
+            size: 每页数量
+            **filters: 其他筛选条件（如 fromCurrency、toCurrency、rateDate 等）
+        
+        Returns:
+            汇率列表数据
+        """
+        params = {
+            "current": current,
+            "size": size,
+            **filters
+        }
+        return await self._request(
+            method="GET",
+            path="/sinocst-module-fa/gl/exchange-rates/page",
+            params=params
+        )
+    
+    async def get_accounts_payable_list(
+        self,
+        current: int = 1,
+        size: int = 10,
+        **filters
+    ) -> Dict[str, Any]:
+        """
+        获取应付账款列表（调用 sinocst-module-fa ap/documents 接口）
+        
+        Args:
+            current: 当前页码
+            size: 每页数量
+            **filters: 其他筛选条件（如 vendorCode、currency、postingPeriod 等）
+        
+        Returns:
+            应付账款列表数据
+        """
+        params = {
+            "current": current,
+            "size": size,
+            **filters
+        }
+        return await self._request(
+            method="GET",
+            path="/sinocst-module-fa/ap/documents/page",
+            params=params
+        )
+    
     # ========== FI月结流程相关方法 ==========
     
     async def execute_all_fi_closing_steps(

@@ -8,14 +8,48 @@
 """
 
 from fastapi import APIRouter, Header, Request
+from fastapi.responses import StreamingResponse
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 import logging
+import time
+import asyncio
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/inventory-cost", tags=["库存成本分析"])
+
+
+# ========== TTL 内存缓存 ==========
+
+class _TTLCache:
+    """简易 TTL 缓存，避免指标/根因数据短时间内重复拉取与计算"""
+    def __init__(self, ttl_seconds: int = 300):
+        self._store: Dict[str, Any] = {}  # key -> (value, expire_ts)
+        self._ttl = ttl_seconds
+
+    def get(self, key: str):
+        entry = self._store.get(key)
+        if entry and entry[1] > time.time():
+            return entry[0]
+        # 过期或不存在
+        self._store.pop(key, None)
+        return None
+
+    def set(self, key: str, value):
+        self._store[key] = (value, time.time() + self._ttl)
+
+    def invalidate(self, key: str = None):
+        if key:
+            self._store.pop(key, None)
+        else:
+            self._store.clear()
+
+
+# 指标缓存 5 分钟，根因缓存 5 分钟
+_metrics_cache = _TTLCache(ttl_seconds=300)
+_root_cause_cache = _TTLCache(ttl_seconds=300)
 
 
 # ========== 请求/响应模型 ==========
@@ -233,7 +267,14 @@ async def get_inventory_metrics(request: Request):
     """
     返回 7 个库存成本核心指标的实时计算值，供 BusinessIssueCard 使用。
     优先从 Java ERP 数据源计算，失败时降级到 mock 数据。
+    结果缓存 5 分钟（TTL），避免短时间内重复拉取 ERP 接口。
     """
+    cache_key = "metrics"
+    cached = _metrics_cache.get(cache_key)
+    if cached:
+        logger.info("命中指标缓存，直接返回")
+        return cached
+
     try:
         service = _get_service(request)
         metrics = await service.calculate_all_metrics()
@@ -241,10 +282,14 @@ async def get_inventory_metrics(request: Request):
         has_data = any(m.get("current_value") is not None for m in metrics)
         if has_data:
             logger.info(f"成功获取真实库存指标数据，共 {len(metrics)} 项")
-            return {"success": True, "data": metrics, "source": "erp"}
+            result = {"success": True, "data": metrics, "source": "erp"}
+            _metrics_cache.set(cache_key, result)
+            return result
         else:
             logger.warning("所有指标均无真实数据，降级到 mock")
-            return {"success": True, "data": get_mock_metrics(), "source": "mock"}
+            result = {"success": True, "data": get_mock_metrics(), "source": "mock"}
+            _metrics_cache.set(cache_key, result)
+            return result
     except Exception as e:
         logger.warning(f"获取真实库存指标失败，降级到 mock: {e}")
         return {"success": True, "data": get_mock_metrics(), "source": "mock"}
@@ -258,7 +303,14 @@ async def get_root_cause_analysis(
     """
     获取库存成本根因分析结果。
     优先从真实 ERP 数据分析，失败时降级到 mock 数据。
+    结果缓存 5 分钟（TTL），避免短时间内重复拉取 ERP 接口。
     """
+    cache_key = f"root_cause_{goal_type}"
+    cached = _root_cause_cache.get(cache_key)
+    if cached:
+        logger.info("命中根因分析缓存，直接返回")
+        return cached
+
     logger.info(f"获取库存成本根因分析: goal_type={goal_type}")
 
     try:
@@ -266,12 +318,14 @@ async def get_root_cause_analysis(
         root_causes = await service.analyze_root_causes()
         if root_causes:
             logger.info(f"成功获取真实根因数据，共 {len(root_causes)} 项")
-            return {
+            result = {
                 "goal_type": goal_type,
                 "analysis_time": datetime.now().isoformat(),
                 "root_causes": root_causes,
                 "source": "erp",
             }
+            _root_cause_cache.set(cache_key, result)
+            return result
     except Exception as e:
         logger.warning(f"真实根因分析失败，降级到 mock: {e}")
 
@@ -342,7 +396,7 @@ async def business_intelligence_chat(
     将目标、现状和问题通过提示词输入给大模型，由大模型给出解决方案，返回文本供业务智能聊天展示。
     若请求中未传或传空 metrics/root_causes，则后端自动拉取；前端传入则直接使用，避免重复拉取导致长时间 loading。
     """
-    import requests as _requests
+    import httpx as _httpx
 
     logger.info("业务智能 /chat 收到请求: query=%s", (body.query or "")[:80])
     metrics = body.metrics if body.metrics else None
@@ -403,26 +457,26 @@ async def business_intelligence_chat(
     user_prompt = user_query
 
     try:
-        logger.info("业务智能 /chat 调用大模型...")
-        resp = _requests.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 2048,
-            },
-            timeout=90,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        logger.info("业务智能 /chat 调用大模型（异步）...")
+        async with _httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2048,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
         content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
         logger.info("业务智能 /chat 大模型返回成功")
         return {
@@ -436,6 +490,128 @@ async def business_intelligence_chat(
             "message": str(e),
             "data": {"text": None},
         }
+
+
+@router.post("/chat/stream", summary="业务智能聊天（SSE 流式输出）")
+async def business_intelligence_chat_stream(
+    request: Request,
+    body: BusinessIntelligenceChatRequest,
+):
+    """
+    与 /chat 功能相同，但以 SSE（Server-Sent Events）流式输出大模型回复，
+    前端可逐字展示，显著改善等待体验。
+    事件格式：
+      data: {"delta":"xxx"}        —— 增量文本
+      data: {"done":true}          —— 流结束
+      data: {"error":"xxx"}        —— 错误
+    """
+    import httpx as _httpx
+    import json as _json
+
+    logger.info("业务智能 /chat/stream 收到请求: query=%s", (body.query or "")[:80])
+
+    # ---- 准备上下文（复用 /chat 逻辑） ----
+    metrics = body.metrics if body.metrics else None
+    root_causes = body.root_causes if body.root_causes else None
+    need_metrics = metrics is None or (isinstance(metrics, list) and len(metrics) == 0)
+    need_root_causes = root_causes is None or (isinstance(root_causes, list) and len(root_causes) == 0)
+
+    if need_metrics or need_root_causes:
+        try:
+            service = _get_service(request)
+            if need_metrics:
+                metrics = await service.calculate_all_metrics()
+                if not any(m.get("current_value") is not None for m in metrics):
+                    metrics = get_mock_metrics()
+            if need_root_causes:
+                root_causes = await service.analyze_root_causes()
+                if not root_causes:
+                    root_causes = get_mock_root_causes()
+        except Exception:
+            if need_metrics:
+                metrics = get_mock_metrics()
+            if need_root_causes:
+                root_causes = get_mock_root_causes()
+
+    context_text = _build_bi_context_text(metrics, root_causes)
+    user_query = (body.query or "").strip() or "请根据当前目标、现状与问题给出改进建议与可执行方案。"
+
+    from app.services.config_service import ConfigService
+    config_service = ConfigService()
+    use_llm = config_service.is_llm_enabled("sd")
+    if not use_llm:
+        async def _err_gen():
+            yield f"data: {_json.dumps({'error': 'LLM 未配置或未启用'}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(_err_gen(), media_type="text/event-stream")
+
+    llm_config = config_service.get_llm_config("sd")
+    api_key = llm_config.get("api_key")
+    base_url = llm_config.get("base_url")
+    model = llm_config.get("model", "qwen-max-latest")
+    if not api_key or not base_url:
+        async def _err_gen():
+            yield f"data: {_json.dumps({'error': 'LLM API Key 或 Base URL 未配置'}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(_err_gen(), media_type="text/event-stream")
+
+    system_prompt = (
+        "你是企业 ERP 业务智能助手，专注库存成本与供应链指标。请根据下面提供的「目标指标、现状与根因问题」，"
+        "针对用户的问题或诉求，给出具体、可执行的解决方案（可包含步骤、建议措施、预期影响等）。"
+        "回答请条理清晰，必要时使用列表或表格。\n\n"
+        "目标、现状与问题：\n" + context_text
+    )
+
+    async def _stream_generator():
+        """SSE 生成器：流式读取 LLM 响应并逐块推送"""
+        try:
+            async with _httpx.AsyncClient(timeout=90.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_query},
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 2048,
+                        "stream": True,
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        # OpenAI 兼容格式: data: {...}
+                        if line.startswith("data: "):
+                            payload = line[6:]
+                            if payload.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = _json.loads(payload)
+                                delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content", "")
+                                if delta:
+                                    yield f"data: {_json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                            except _json.JSONDecodeError:
+                                continue
+            # 完成信号
+            yield f"data: {_json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            logger.exception("业务智能流式聊天失败: %s", e)
+            yield f"data: {_json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+        },
+    )
 
 
 @router.get("/trend", summary="获取库存成本趋势数据")

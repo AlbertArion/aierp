@@ -16,7 +16,32 @@ logger = logging.getLogger(__name__)
 
 
 class ERPServiceClient:
-    """ERP服务客户端，用于调用Java后端服务"""
+    """ERP服务客户端，用于调用Java后端服务（带连接池复用）"""
+
+    # 类级别共享连接池，避免每次请求创建新连接
+    _shared_client: Optional[httpx.AsyncClient] = None
+
+    @classmethod
+    def _get_shared_client(cls) -> httpx.AsyncClient:
+        """获取/创建共享的 httpx.AsyncClient（带连接池）"""
+        if cls._shared_client is None or cls._shared_client.is_closed:
+            cls._shared_client = httpx.AsyncClient(
+                timeout=30.0,
+                limits=httpx.Limits(
+                    max_connections=50,          # 最大连接数
+                    max_keepalive_connections=20, # 保持活跃的连接数
+                    keepalive_expiry=30,          # 空闲连接过期时间(秒)
+                ),
+                http2=False,  # Java后端通常不支持HTTP/2
+            )
+        return cls._shared_client
+
+    @classmethod
+    async def close_shared_client(cls):
+        """关闭共享客户端（用于应用关闭时清理）"""
+        if cls._shared_client and not cls._shared_client.is_closed:
+            await cls._shared_client.aclose()
+            cls._shared_client = None
     
     def __init__(self, token: Optional[str] = None, mandt: Optional[str] = None, tenant_id: Optional[str] = None):
         """
@@ -138,23 +163,24 @@ class ERPServiceClient:
         url = f"{base_url}{adjusted_path}"
         headers = self._get_headers()
         
+        client = self._get_shared_client()
         last_error = None
         for attempt in range(self.retry_count):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    logger.debug(f"调用{service_name}服务: {method} {url}")
-                    
-                    response = await client.request(
-                        method=method,
-                        url=url,
-                        params=params,
-                        json=json,
-                        headers=headers
-                    )
-                    
-                    response.raise_for_status()
-                    result = response.json()
-                    return result
+                logger.debug(f"调用{service_name}服务: {method} {url}")
+
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=json,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+
+                response.raise_for_status()
+                result = response.json()
+                return result
                     
             except httpx.HTTPStatusError as e:
                 last_error = e
